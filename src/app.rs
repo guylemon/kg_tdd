@@ -29,15 +29,23 @@ struct CyEdge {
 
 #[derive(Debug, Serialize)]
 struct CyNodeData {
-    id: String,
+    id: NodeId,
 }
+
+/// Newtype to prevent rogue string use
+#[derive(Debug, Serialize)]
+struct NodeId(String);
 
 #[derive(Debug, Serialize)]
 struct CyEdgeData {
-    id: String,
-    source: String,
-    target: String,
+    id: EdgeId,
+    source: NodeId,
+    target: NodeId,
 }
+
+/// Newtype to prevent rogue string use
+#[derive(Debug, Serialize)]
+struct EdgeId(String);
 
 pub struct App<R, W> {
     input_reader: R,
@@ -87,15 +95,15 @@ where
 fn cytoscape_elements() -> CytoscapeElements {
     let cy_node = CyNode {
         data: CyNodeData {
-            id: TODO_STRING.to_owned(),
+            id: NodeId(TODO_STRING.to_owned()),
         },
     };
 
     let cy_edges = CyEdge {
         data: CyEdgeData {
-            id: TODO_STRING.to_owned(),
-            source: TODO_STRING.to_owned(),
-            target: TODO_STRING.to_owned(),
+            id: EdgeId(TODO_STRING.to_owned()),
+            source: NodeId(TODO_STRING.to_owned()),
+            target: NodeId(TODO_STRING.to_owned()),
         },
     };
 
