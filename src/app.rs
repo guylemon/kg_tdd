@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::io::Read;
 use std::io::Write;
 
@@ -8,7 +9,7 @@ pub struct Todo;
 
 /// A serializable type used as input to the cytoscape JavaScript UI library.
 /// See more: <https://js.cytoscape.org/#notation/elements-json>
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct CytoscapeElements {
     /// The cytoscape graph nodes
     nodes: Vec<CyNode>,
@@ -16,22 +17,22 @@ struct CytoscapeElements {
     edges: Vec<CyEdge>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct CyNode {
     data: CyNodeData,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct CyEdge {
     data: CyEdgeData,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct CyNodeData {
     id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct CyEdgeData {
     id: String,
     source: String,
@@ -64,9 +65,11 @@ where
             .read_to_string(&mut raw_text)
             .map_err(|_| Todo)?;
 
+        let elements = cytoscape_elements();
+
         // TODO this may end up being a thin wrapper around serde, in which case it will be
         // replaced later. For now, we are avoiding implementation details.
-        let cytoscape_json = serialize_cy_elements(cytoscape_elements());
+        let cytoscape_json = serialize_cy_elements(&elements)?;
 
         // Write the serialized graph
         // TODO replace TODO_STRING with a serialized JSON graph in the proper format for Cytoscape.
@@ -104,7 +107,6 @@ fn cytoscape_elements() -> CytoscapeElements {
 
 // TODO this may end up being a thin wrapper around serde, in which case it will be
 // replaced later. For now, we are avoiding implementation details.
-fn serialize_cy_elements(_cy_elements: CytoscapeElements) -> String {
-    // TODO replace TODO_STRING with a serialized JSON graph in the proper format for Cytoscape.
-    TODO_STRING.to_owned()
+fn serialize_cy_elements(cy_elements: &CytoscapeElements) -> Result<String, Todo> {
+    serde_json::to_string(cy_elements).map_err(|_| Todo)
 }
