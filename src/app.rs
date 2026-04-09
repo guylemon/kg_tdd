@@ -48,6 +48,20 @@ struct CyNodeData {
     mentions: Vec<TextUnit>,
 }
 
+// Support efficient transformation to CyNodeData from the GraphNode types
+impl From<GraphNode> for CyNodeData {
+    fn from(node: GraphNode) -> Self {
+        Self {
+            id: NodeId(TODO_STRING.to_owned()),
+            name: node.name,
+            entity_type: node.entity_type,
+            description: node.description,
+            mentions: node.mentions,
+        }
+    }
+}
+
+// Support efficient transformation to CyNodeData from the GraphNode types
 /// Newtype to prevent rogue string use
 #[derive(Debug, Serialize)]
 struct NodeId(String);
@@ -61,9 +75,11 @@ struct EntityName(String);
 struct NodeDescription(String);
 
 /// The supported Entity types for this application
+// TODO remove unused allow rule
 #[derive(Debug, Serialize)]
 enum EntityType {
     /// Theoretical ideas, methodologies, approaches
+    #[allow(unused)]
     Concept,
 
     /// Conferences, releases, historical events
@@ -117,6 +133,19 @@ struct CyEdgeData {
     weight: EdgeWeight,
 }
 
+impl From<GraphEdge> for CyEdgeData {
+    fn from(edge: GraphEdge) -> Self {
+        Self {
+            id: EdgeId(TODO_STRING.to_owned()),
+            source: edge.source,
+            target: edge.target,
+            description: edge.description,
+            evidence: edge.evidence,
+            weight: edge.weight,
+        }
+    }
+}
+
 // TODO It is unclear which type of number to use at this time.
 #[derive(Debug, Serialize)]
 struct EdgeWeight(Todo);
@@ -148,6 +177,7 @@ struct FactualClaim {
 struct Fact(String);
 
 /// Represents the degree of epistemic certainty for a given claim, given the context.
+// TODO remove unused allow rule
 #[derive(Debug, Serialize)]
 enum EpistemicStatus {
     /// An arbitrary claim has no perceptual or conceptual evidence. It is neither true or false
@@ -157,6 +187,7 @@ enum EpistemicStatus {
     /// Examples:
     /// - "There is a teapot orbiting Mars."
     /// - "You are secretly a parrot."
+    #[allow(unused)]
     Arbitrary,
 
     /// A claim for which there is some, but not conclusive evidence. There is nothing in the
@@ -215,8 +246,20 @@ struct KnowledgeGraph {
     edges: Vec<GraphEdge>,
 }
 
-struct GraphNode;
-struct GraphEdge;
+struct GraphNode {
+    description: NodeDescription,
+    entity_type: EntityType,
+    mentions: Vec<TextUnit>,
+    name: EntityName,
+}
+
+struct GraphEdge {
+    source: NodeId,
+    target: NodeId,
+    description: EdgeDescription,
+    evidence: Vec<FactualClaim>,
+    weight: EdgeWeight,
+}
 
 struct EntityMention;
 struct RelationshipMention;
@@ -226,6 +269,7 @@ pub struct MaxConcurrency(pub u8);
 
 /// A unit of work in the map reduce phase of the ingestion pipeline
 // TODO determine whether to add a task type enum
+#[derive(Debug)]
 struct ExtractionTask {
     chunk: Chunk,
 }
@@ -404,44 +448,19 @@ fn partition_document(_document: &Document) -> Vec<TextUnit> {
     vec![]
 }
 
-/// Constructs the elements structure that cytoscape renders.
-// TODO Ultimately, this function should transform a core graph structure for use with cytoscape.
-fn convert_kg_to_cytoscape_elements(_kg: KnowledgeGraph) -> CytoscapeElements {
-    let cy_node = CyNode {
-        data: CyNodeData {
-            id: NodeId(TODO_STRING.to_owned()),
-            description: NodeDescription(TODO_STRING.to_owned()),
-            name: EntityName(TODO_STRING.to_owned()),
-            entity_type: EntityType::Concept,
-            mentions: vec![TextUnit {
-                document_id: DocumentId(TODO_STRING.to_owned()),
-                text: NonEmptyString(TODO_STRING.to_owned()),
-                token_count: TokenCount(1),
-            }],
-        },
-    };
+/// Constructs the elements JSON structure that cytoscape requires.
+fn convert_kg_to_cytoscape_elements(kg: KnowledgeGraph) -> CytoscapeElements {
+    let nodes: Vec<CyNode> = kg
+        .nodes
+        .into_iter()
+        .map(|n| CyNode { data: n.into() })
+        .collect();
 
-    let cy_edge = CyEdge {
-        data: CyEdgeData {
-            id: EdgeId(TODO_STRING.to_owned()),
-            source: NodeId(TODO_STRING.to_owned()),
-            target: NodeId(TODO_STRING.to_owned()),
-            description: EdgeDescription(TODO_STRING.to_owned()),
-            evidence: vec![FactualClaim {
-                fact: Fact(TODO_STRING.to_owned()),
-                citation: TextUnit {
-                    document_id: DocumentId(TODO_STRING.to_owned()),
-                    text: NonEmptyString(TODO_STRING.to_owned()),
-                    token_count: TokenCount(1),
-                },
-                status: EpistemicStatus::Arbitrary,
-            }],
-            weight: EdgeWeight(Todo),
-        },
-    };
+    let edges: Vec<CyEdge> = kg
+        .edges
+        .into_iter()
+        .map(|e| CyEdge { data: e.into() })
+        .collect();
 
-    CytoscapeElements {
-        nodes: vec![cy_node],
-        edges: vec![cy_edge],
-    }
+    CytoscapeElements { nodes, edges }
 }
