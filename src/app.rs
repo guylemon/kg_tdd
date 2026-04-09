@@ -1,6 +1,9 @@
 use serde::Serialize;
 use std::io::Read;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::mpsc;
 
 const TODO_STRING: &str = "";
 
@@ -207,9 +210,39 @@ struct Document {
     text: NonEmptyString,
 }
 
+struct KnowledgeGraph {
+    nodes: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+}
+
+struct GraphNode;
+struct GraphEdge;
+
+struct EntityMention;
+struct RelationshipMention;
+
+// TODO remove public field and create initializer
+pub struct MaxConcurrency(pub u8);
+
+/// A unit of work in the map reduce phase of the ingestion pipeline
+// TODO determine whether to add a task type enum
+struct ExtractionTask {
+    chunk: Chunk,
+}
+
+struct ExtractionResult {
+    entities: Vec<EntityMention>,
+    relationships: Vec<RelationshipMention>,
+}
+
+// Type alias for an unprocessed chunk. A text unit has its entities marked.
+type Chunk = TextUnit;
+
 pub struct App<R, W> {
     input_reader: R,
     cytoscape_writer: W,
+    /// The maximum number of threads to use when performing concurrent workloads during ingestion
+    max_concurrency: MaxConcurrency,
 }
 
 impl<R, W> App<R, W>
@@ -217,10 +250,11 @@ where
     R: Read,
     W: Write,
 {
-    pub fn new(input_reader: R, cytoscape_writer: W) -> Self {
+    pub fn new(input_reader: R, cytoscape_writer: W, max_concurrency: MaxConcurrency) -> Self {
         Self {
             input_reader,
             cytoscape_writer,
+            max_concurrency,
         }
     }
 
@@ -233,9 +267,25 @@ where
             .read_to_string(&mut raw_text)
             .map_err(|_| Todo)?;
 
-        // Serialize and write the cytoscape graph
-        let cytoscape_json = serde_json::to_string(&cytoscape_elements()).map_err(|_| Todo)?;
+        let document = Document {
+            id: DocumentId(TODO_STRING.to_owned()),
+            text: NonEmptyString(raw_text),
+        };
 
+        let chunks = partition_document(&document);
+
+        let (entity_mentions, relationship_mentions) =
+            map_reduce_extract(&self.max_concurrency, chunks)?;
+
+        let (nodes, edges): (Vec<GraphNode>, Vec<GraphEdge>) =
+            finalize_entities_relationships(entity_mentions, relationship_mentions);
+
+        let knowledge_graph = assemble_graph(nodes, edges);
+
+        let cytoscape_elements = convert_kg_to_cytoscape_elements(knowledge_graph);
+        let cytoscape_json = serde_json::to_string(&cytoscape_elements).map_err(|_| Todo)?;
+
+        // - Write the cytoscape graph
         self.cytoscape_writer
             .write(cytoscape_json.as_bytes())
             .map_err(|_| Todo)?;
@@ -244,10 +294,119 @@ where
     }
 }
 
+fn map_reduce_extract(
+    max_concurrency: &MaxConcurrency,
+    chunks: Vec<Chunk>,
+) -> Result<(Vec<EntityMention>, Vec<RelationshipMention>), Todo> {
+    // Cache the number of document chunks
+    let num_chunks = chunks.len();
+
+    // TODO evaluate whether it makes sense to use multiple task queues or to run map within a
+    // single queue
+    // General task FIFO queue with exclusive receiver
+    let (task_tx, task_rx) = mpsc::channel::<ExtractionTask>();
+    let task_rx = Arc::new(Mutex::new(task_rx));
+
+    // Extraction result FIFO queue
+    let (result_tx, result_rx) = mpsc::channel::<ExtractionResult>();
+
+    let mut handles: Vec<std::thread::JoinHandle<()>> =
+        Vec::with_capacity(max_concurrency.0.into());
+
+    // Spawn worker threads
+    for _ in 0..max_concurrency.0 {
+        let task_receiver = Arc::clone(&task_rx);
+        let result_transmitter = result_tx.clone();
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                let task = {
+                    let guard = task_receiver.lock().unwrap();
+                    guard.recv()
+                };
+
+                match task {
+                    Ok(task) => {
+                        let marked: TextUnit = mark_entities(task.chunk);
+                        let entities: Vec<EntityMention> = extract_entities(&marked);
+                        let relationships: Vec<RelationshipMention> = extract_relationships(marked);
+
+                        // Disregard TX error
+                        let _ = result_transmitter.send(ExtractionResult {
+                            entities,
+                            relationships,
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Load task queue
+    for chunk in chunks {
+        task_tx.send(ExtractionTask { chunk }).map_err(|_| Todo)?;
+    }
+
+    // Pull exactly num_chunks results from the results channel
+    let mut results = Vec::with_capacity(num_chunks);
+    for _ in 0..num_chunks {
+        let result = result_rx.recv().map_err(|_| Todo)?;
+        results.push(result);
+    }
+
+    // Reduce results to tuple
+    let aggregated_results = results.into_iter().fold(
+        (Vec::new(), Vec::new()), // Accumulated entities and relationships
+        |(mut acc_entities, mut acc_relationships), item| {
+            acc_entities.extend(item.entities);
+            acc_relationships.extend(item.relationships);
+            (acc_entities, acc_relationships)
+        },
+    );
+
+    Ok(aggregated_results)
+}
+
+fn extract_relationships(_text_unit: TextUnit) -> Vec<RelationshipMention> {
+    // TODO LLM process needed here
+    vec![]
+}
+
+fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
+    // TODO LLM process needed here
+    vec![]
+}
+
+fn mark_entities(chunk: Chunk) -> TextUnit {
+    // TODO LLM process needed here
+    TextUnit {
+        document_id: chunk.document_id,
+        text: chunk.text,
+        token_count: chunk.token_count,
+    }
+}
+
+/// Deduplicate and resolve entities and relationships
+fn finalize_entities_relationships(
+    _entities: Vec<EntityMention>,
+    _relationships: Vec<RelationshipMention>,
+) -> (Vec<GraphNode>, Vec<GraphEdge>) {
+    (vec![], vec![])
+}
+
+fn assemble_graph(nodes: Vec<GraphNode>, edges: Vec<GraphEdge>) -> KnowledgeGraph {
+    KnowledgeGraph { nodes, edges }
+}
+
+fn partition_document(_document: &Document) -> Vec<TextUnit> {
+    vec![]
+}
+
 /// Constructs the elements structure that cytoscape renders.
 // TODO Ultimately, this function should transform a core graph structure for use with cytoscape.
-// While working backward to discover the domain, stub the elements as needed.
-fn cytoscape_elements() -> CytoscapeElements {
+fn convert_kg_to_cytoscape_elements(_kg: KnowledgeGraph) -> CytoscapeElements {
     let cy_node = CyNode {
         data: CyNodeData {
             id: NodeId(TODO_STRING.to_owned()),
