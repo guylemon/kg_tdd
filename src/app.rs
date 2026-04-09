@@ -233,14 +233,9 @@ where
             .read_to_string(&mut raw_text)
             .map_err(|_| Todo)?;
 
-        let elements = cytoscape_elements();
+        // Serialize and write the cytoscape graph
+        let cytoscape_json = serde_json::to_string(&cytoscape_elements()).map_err(|_| Todo)?;
 
-        // TODO this may end up being a thin wrapper around serde, in which case it will be
-        // replaced later. For now, we are avoiding implementation details.
-        let cytoscape_json = serialize_cy_elements(&elements)?;
-
-        // Write the serialized graph
-        // TODO replace TODO_STRING with a serialized JSON graph in the proper format for Cytoscape.
         self.cytoscape_writer
             .write(cytoscape_json.as_bytes())
             .map_err(|_| Todo)?;
@@ -290,10 +285,4 @@ fn cytoscape_elements() -> CytoscapeElements {
         nodes: vec![cy_node],
         edges: vec![cy_edge],
     }
-}
-
-// TODO this may end up being a thin wrapper around serde, in which case it will be
-// replaced later. For now, we are avoiding implementation details.
-fn serialize_cy_elements(cy_elements: &CytoscapeElements) -> Result<String, Todo> {
-    serde_json::to_string(cy_elements).map_err(|_| Todo)
 }
