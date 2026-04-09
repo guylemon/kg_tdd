@@ -214,13 +214,20 @@ struct TextUnit {
     document_id: DocumentId,
 
     /// The raw chunk text
-    text: NonEmptyString,
+    text: AnnotatedText,
 
     /// The number of tokens in the raw chunk text
     /// ``token_count`` can be used to control context size in LLM prompts containing the
     /// ``TextUnit``
     token_count: TokenCount,
 }
+
+/// ``AnnotatedText`` is text from a Chunk that has its entities marked.
+///
+/// - Raw text -> "I like apples"
+/// - Annotated text -> "<entity type=Person>I</entity> like <entity type=Lifeform>apples</entity>"
+#[derive(Debug, Serialize)]
+struct AnnotatedText(String);
 
 #[derive(Debug, Serialize)]
 struct DocumentId(String);
@@ -280,7 +287,19 @@ struct ExtractionResult {
 }
 
 // Type alias for an unprocessed chunk. A text unit has its entities marked.
-type Chunk = TextUnit;
+#[derive(Debug)]
+struct Chunk {
+    /// The id of the source document
+    document_id: DocumentId,
+
+    /// The raw chunk text
+    text: NonEmptyString,
+
+    /// The number of tokens in the raw chunk text
+    /// ``token_count`` can be used to control context size in LLM prompts containing the
+    /// ``TextUnit``
+    token_count: TokenCount,
+}
 
 pub struct App<R, W> {
     input_reader: R,
@@ -425,9 +444,10 @@ fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
 
 fn mark_entities(chunk: Chunk) -> TextUnit {
     // TODO LLM process needed here
+    let text = AnnotatedText(chunk.text.0);
     TextUnit {
         document_id: chunk.document_id,
-        text: chunk.text,
+        text,
         token_count: chunk.token_count,
     }
 }
@@ -444,7 +464,7 @@ fn assemble_graph(nodes: Vec<GraphNode>, edges: Vec<GraphEdge>) -> KnowledgeGrap
     KnowledgeGraph { nodes, edges }
 }
 
-fn partition_document(_document: &Document) -> Vec<TextUnit> {
+fn partition_document(_document: &Document) -> Vec<Chunk> {
     vec![]
 }
 
