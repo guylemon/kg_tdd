@@ -197,6 +197,16 @@ struct NonEmptyString(String);
 #[derive(Debug, Serialize)]
 struct TokenCount(usize);
 
+/// Represents a unit of source material for the graph produced by this application
+#[allow(unused)]
+struct Document {
+    // TODO define how this is derived
+    id: DocumentId,
+
+    /// The full raw text of the document
+    text: NonEmptyString,
+}
+
 pub struct App<R, W> {
     input_reader: R,
     cytoscape_writer: W,
