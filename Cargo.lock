@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "kg"
+name = "kg_tdd"
 version = "0.1.0"
