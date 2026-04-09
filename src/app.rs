@@ -29,12 +29,69 @@ struct CyEdge {
 
 #[derive(Debug, Serialize)]
 struct CyNodeData {
+    // TODO are these ids only required for cytoscape? If so, rename to CyNodeId.
     id: NodeId,
+
+    /// The canonical name of the entity, produced during entity resolution.
+    name: EntityName,
+
+    /// The type of the entity
+    entity_type: EntityType,
+
+    /// An LLM generated summary of all entity descriptions collected during entity resolution.
+    description: NodeDescription,
+
+    /// A collection of ``TextUnit`` referring to this entity
+    mentions: Vec<TextUnit>,
 }
 
 /// Newtype to prevent rogue string use
 #[derive(Debug, Serialize)]
 struct NodeId(String);
+
+/// Newtype to prevent rogue string use
+#[derive(Debug, Serialize)]
+struct EntityName(String);
+
+/// Newtype to prevent rogue string use
+#[derive(Debug, Serialize)]
+struct NodeDescription(String);
+
+/// The supported Entity types for this application
+#[derive(Debug, Serialize)]
+enum EntityType {
+    /// Theoretical ideas, methodologies, approaches
+    Concept,
+
+    /// Conferences, releases, historical events
+    #[allow(unused)]
+    Event,
+
+    /// A biological lifeform, such as a plant, animal, insect. Given the current context, it is not a
+    /// product.
+    #[allow(unused)]
+    Lifeform,
+
+    /// Cities, countries, regions
+    #[allow(unused)]
+    Location,
+
+    /// Companies, institutions, or universities
+    #[allow(unused)]
+    Organization,
+
+    /// People mentioned in the chunk text
+    #[allow(unused)]
+    Person,
+
+    /// Software products, platforms, services
+    #[allow(unused)]
+    Product,
+
+    /// Frameworks, programming languages, algorithms
+    #[allow(unused)]
+    Technology,
+}
 
 #[derive(Debug, Serialize)]
 struct CyEdgeData {
@@ -54,7 +111,7 @@ struct CyEdgeData {
     evidence: Vec<FactualClaim>,
 
     /// The weight of the relationship, derived from the strength of the `evidence`
-    weight: EdgeWeight
+    weight: EdgeWeight,
 }
 
 // TODO It is unclear which type of number to use at this time.
@@ -169,6 +226,10 @@ fn cytoscape_elements() -> CytoscapeElements {
     let cy_node = CyNode {
         data: CyNodeData {
             id: NodeId(TODO_STRING.to_owned()),
+            description: NodeDescription(TODO_STRING.to_owned()),
+            name: EntityName(TODO_STRING.to_owned()),
+            entity_type: EntityType::Concept,
+            mentions: vec![TextUnit],
         },
     };
 
@@ -183,7 +244,7 @@ fn cytoscape_elements() -> CytoscapeElements {
                 citation: TextUnit,
                 status: EpistemicStatus::Arbitrary,
             }],
-            weight: EdgeWeight(Todo)
+            weight: EdgeWeight(Todo),
         },
     };
 
