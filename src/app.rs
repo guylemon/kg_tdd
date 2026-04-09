@@ -4,7 +4,7 @@ use std::io::Write;
 
 const TODO_STRING: &str = "";
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Todo;
 
 /// A serializable type used as input to the cytoscape JavaScript UI library.
@@ -39,13 +39,86 @@ struct NodeId(String);
 #[derive(Debug, Serialize)]
 struct CyEdgeData {
     id: EdgeId,
+
+    /// The source node identifier
     source: NodeId,
+
+    /// The target node identifier
     target: NodeId,
+
+    /// An LLM generated summary of the relationship between the source and target nodes
+    description: EdgeDescription,
+
+    /// Evidence from the source text that substantiates the relationship between the source and
+    /// target nodes.
+    evidence: Vec<FactualClaim>,
+
+    /// The weight of the relationship, derived from the strength of the `evidence`
+    weight: EdgeWeight
 }
+
+// TODO It is unclear which type of number to use at this time.
+#[derive(Debug, Serialize)]
+struct EdgeWeight(Todo);
 
 /// Newtype to prevent rogue string use
 #[derive(Debug, Serialize)]
 struct EdgeId(String);
+
+/// Newtype to prevent rogue string use
+#[derive(Debug, Serialize)]
+struct EdgeDescription(String);
+
+/// A factual claim that supports a proposed relationship between a source and target node.
+#[derive(Debug, Serialize)]
+struct FactualClaim {
+    /// The factual claim
+    fact: Fact,
+
+    /// The source text unit
+    // TODO should this be a reference or owned?
+    citation: TextUnit,
+
+    /// The degree of confidence in the claim.
+    status: EpistemicStatus,
+}
+
+/// Represents a single chunk of a source document.
+#[derive(Debug, Serialize)]
+struct Fact(String);
+
+/// Represents the degree of epistemic certainty for a given claim, given the context.
+#[derive(Debug, Serialize)]
+enum EpistemicStatus {
+    /// An arbitrary claim has no perceptual or conceptual evidence. It is neither true or false
+    /// because it is outside of cognition. The arbitrary is distinct from the possible because the
+    /// arbitrary has no proposed evidence.
+    ///
+    /// Examples:
+    /// - "There is a teapot orbiting Mars."
+    /// - "You are secretly a parrot."
+    Arbitrary,
+
+    /// A claim for which there is some, but not conclusive evidence. There is nothing in the
+    /// current context of knowledge that contradicts the evidence.
+    #[allow(unused)]
+    Possible,
+
+    /// A claim for which the evidence is strong, but not yet conclusive. The context indicates
+    /// that the weight of the evidence supports the claim, making it more likely to be true than
+    /// false; however, further evidence could still tip the scale.
+    #[allow(unused)]
+    Probable,
+
+    /// A claim for which the evidence is conclusive within a given context of knowledge. All
+    /// available evidence supports the claim, and there is no evidence to support any alternative.
+    #[allow(unused)]
+    Certain,
+}
+
+/// Represents a single chunk of a source document.
+#[derive(Debug, Serialize)]
+struct TextUnit;
 
 pub struct App<R, W> {
     input_reader: R,
@@ -99,17 +172,24 @@ fn cytoscape_elements() -> CytoscapeElements {
         },
     };
 
-    let cy_edges = CyEdge {
+    let cy_edge = CyEdge {
         data: CyEdgeData {
             id: EdgeId(TODO_STRING.to_owned()),
             source: NodeId(TODO_STRING.to_owned()),
             target: NodeId(TODO_STRING.to_owned()),
+            description: EdgeDescription(TODO_STRING.to_owned()),
+            evidence: vec![FactualClaim {
+                fact: Fact(TODO_STRING.to_owned()),
+                citation: TextUnit,
+                status: EpistemicStatus::Arbitrary,
+            }],
+            weight: EdgeWeight(Todo)
         },
     };
 
     CytoscapeElements {
         nodes: vec![cy_node],
-        edges: vec![cy_edges],
+        edges: vec![cy_edge],
     }
 }
 
