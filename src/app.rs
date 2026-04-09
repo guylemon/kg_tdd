@@ -175,7 +175,27 @@ enum EpistemicStatus {
 
 /// Represents a single chunk of a source document.
 #[derive(Debug, Serialize)]
-struct TextUnit;
+struct TextUnit {
+    /// The id of the source document
+    document_id: DocumentId,
+
+    /// The raw chunk text
+    text: NonEmptyString,
+
+    /// The number of tokens in the raw chunk text
+    /// ``token_count`` can be used to control context size in LLM prompts containing the
+    /// ``TextUnit``
+    token_count: TokenCount,
+}
+
+#[derive(Debug, Serialize)]
+struct DocumentId(String);
+
+#[derive(Debug, Serialize)]
+struct NonEmptyString(String);
+
+#[derive(Debug, Serialize)]
+struct TokenCount(usize);
 
 pub struct App<R, W> {
     input_reader: R,
@@ -229,7 +249,11 @@ fn cytoscape_elements() -> CytoscapeElements {
             description: NodeDescription(TODO_STRING.to_owned()),
             name: EntityName(TODO_STRING.to_owned()),
             entity_type: EntityType::Concept,
-            mentions: vec![TextUnit],
+            mentions: vec![TextUnit {
+                document_id: DocumentId(TODO_STRING.to_owned()),
+                text: NonEmptyString(TODO_STRING.to_owned()),
+                token_count: TokenCount(1),
+            }],
         },
     };
 
@@ -241,7 +265,11 @@ fn cytoscape_elements() -> CytoscapeElements {
             description: EdgeDescription(TODO_STRING.to_owned()),
             evidence: vec![FactualClaim {
                 fact: Fact(TODO_STRING.to_owned()),
-                citation: TextUnit,
+                citation: TextUnit {
+                    document_id: DocumentId(TODO_STRING.to_owned()),
+                    text: NonEmptyString(TODO_STRING.to_owned()),
+                    token_count: TokenCount(1),
+                },
                 status: EpistemicStatus::Arbitrary,
             }],
             weight: EdgeWeight(Todo),
