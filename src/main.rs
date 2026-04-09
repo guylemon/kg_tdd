@@ -11,9 +11,9 @@ fn main() {
     // TODO use a file in the near future. The application will transform the graph to a JSON
     // format used by Cytoscape.js and write it to a file for inclusion in a static html document.
     // https://js.cytoscape.org/#demos
-    let graph_writer = Cursor::new(Vec::new());
+    let cytoscape_writer = Cursor::new(Vec::new());
 
-    let application = App::new(input_reader, graph_writer);
+    let application = App::new(input_reader, cytoscape_writer);
 
     // TODO no need to use debug when an error type is in place.
     if let Err(e) = application.run() {

@@ -6,11 +6,41 @@ const TODO_STRING: &str = "";
 #[derive(Debug)]
 pub struct Todo;
 
-pub struct CytoscapeGraph;
+/// A serializable type used as input to the cytoscape JavaScript UI library.
+/// See more: <https://js.cytoscape.org/#notation/elements-json>
+#[derive(Debug)]
+struct CytoscapeElements {
+    /// The cytoscape graph nodes
+    nodes: Vec<CyNode>,
+    /// The cytoscape graph edges
+    edges: Vec<CyEdge>,
+}
+
+#[derive(Debug)]
+struct CyNode {
+    data: CyNodeData,
+}
+
+#[derive(Debug)]
+struct CyEdge {
+    data: CyEdgeData,
+}
+
+#[derive(Debug)]
+struct CyNodeData {
+    id: String,
+}
+
+#[derive(Debug)]
+struct CyEdgeData {
+    id: String,
+    source: String,
+    target: String,
+}
 
 pub struct App<R, W> {
     input_reader: R,
-    graph_writer: W,
+    cytoscape_writer: W,
 }
 
 impl<R, W> App<R, W>
@@ -18,10 +48,10 @@ where
     R: Read,
     W: Write,
 {
-    pub fn new(input_reader: R, graph_writer: W) -> Self {
+    pub fn new(input_reader: R, cytoscape_writer: W) -> Self {
         Self {
             input_reader,
-            graph_writer,
+            cytoscape_writer,
         }
     }
 
@@ -36,11 +66,11 @@ where
 
         // TODO this may end up being a thin wrapper around serde, in which case it will be
         // replaced later. For now, we are avoiding implementation details.
-        let cytoscape_json = serialize_graph_cy(CytoscapeGraph);
+        let cytoscape_json = serialize_cy_elements(cytoscape_elements());
 
         // Write the serialized graph
         // TODO replace TODO_STRING with a serialized JSON graph in the proper format for Cytoscape.
-        self.graph_writer
+        self.cytoscape_writer
             .write(cytoscape_json.as_bytes())
             .map_err(|_| Todo)?;
 
@@ -48,9 +78,33 @@ where
     }
 }
 
+/// Constructs the elements structure that cytoscape renders.
+// TODO Ultimately, this function should transform a core graph structure for use with cytoscape.
+// While working backward to discover the domain, stub the elements as needed.
+fn cytoscape_elements() -> CytoscapeElements {
+    let cy_node = CyNode {
+        data: CyNodeData {
+            id: TODO_STRING.to_owned(),
+        },
+    };
+
+    let cy_edges = CyEdge {
+        data: CyEdgeData {
+            id: TODO_STRING.to_owned(),
+            source: TODO_STRING.to_owned(),
+            target: TODO_STRING.to_owned(),
+        },
+    };
+
+    CytoscapeElements {
+        nodes: vec![cy_node],
+        edges: vec![cy_edges],
+    }
+}
+
 // TODO this may end up being a thin wrapper around serde, in which case it will be
 // replaced later. For now, we are avoiding implementation details.
-fn serialize_graph_cy(_cy_graph: CytoscapeGraph) -> String {
+fn serialize_cy_elements(_cy_elements: CytoscapeElements) -> String {
     // TODO replace TODO_STRING with a serialized JSON graph in the proper format for Cytoscape.
     TODO_STRING.to_owned()
 }
