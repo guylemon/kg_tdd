@@ -343,8 +343,7 @@ where
         let (nodes, edges): (Vec<GraphNode>, Vec<GraphEdge>) =
             finalize_entities_relationships(entity_mentions, relationship_mentions);
 
-        let knowledge_graph = assemble_graph(nodes, edges);
-
+        let knowledge_graph = KnowledgeGraph { nodes, edges };
         let cytoscape_elements = convert_kg_to_cytoscape_elements(knowledge_graph);
         let cytoscape_json = serde_json::to_string(&cytoscape_elements).map_err(|_| Todo)?;
 
@@ -458,10 +457,6 @@ fn finalize_entities_relationships(
     _relationships: Vec<RelationshipMention>,
 ) -> (Vec<GraphNode>, Vec<GraphEdge>) {
     (vec![], vec![])
-}
-
-fn assemble_graph(nodes: Vec<GraphNode>, edges: Vec<GraphEdge>) -> KnowledgeGraph {
-    KnowledgeGraph { nodes, edges }
 }
 
 fn partition_document(_document: &Document) -> Vec<Chunk> {
