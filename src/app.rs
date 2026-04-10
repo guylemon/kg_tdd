@@ -65,7 +65,7 @@ impl From<GraphNode> for CyNodeData {
 
 // Support efficient transformation to CyNodeData from the GraphNode types
 /// Newtype to prevent rogue string use
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 struct NodeId(String);
 
 /// Newtype to prevent rogue string use
@@ -150,7 +150,7 @@ impl From<GraphEdge> for CyEdgeData {
 
 // TODO It is unclear which type of number to use at this time.
 #[derive(Debug, Serialize)]
-struct EdgeWeight(Todo);
+struct EdgeWeight(u16);
 
 /// Newtype to prevent rogue string use
 #[derive(Debug, Serialize)]
@@ -280,7 +280,12 @@ struct EntityMention {
     source: TextUnit,
 }
 
-struct RelationshipMention {}
+struct RelationshipMention {
+    source: NodeId,
+    target: NodeId,
+    description: EdgeDescription,
+    evidence: Vec<FactualClaim>,
+}
 
 // TODO remove public field and create initializer
 pub struct MaxConcurrency(pub u8);
@@ -465,11 +470,42 @@ fn mark_entities(chunk: Chunk) -> TextUnit {
 /// Deduplicate and resolve entities and relationships
 fn finalize_entities_relationships(
     entities: Vec<EntityMention>,
-    _relationships: Vec<RelationshipMention>,
+    relationships: Vec<RelationshipMention>,
 ) -> (Vec<GraphNode>, Vec<GraphEdge>) {
     let nodes = consolidate_entities(entities);
+    let edges = consolidate_relationships(relationships);
 
-    (nodes, vec![])
+    (nodes, edges)
+}
+
+fn consolidate_relationships(relationship_mentions: Vec<RelationshipMention>) -> Vec<GraphEdge> {
+    let mut lookup: HashMap<(NodeId, NodeId), GraphEdge> = HashMap::new();
+
+    for mention in relationship_mentions {
+        match lookup.entry((mention.source.clone(), mention.target.clone())) {
+            Entry::Occupied(mut occupied_entry) => {
+                // Add the evidence
+                // TODO consider LLM summary or tightening the FactualClaim type so it does not
+                // include a full text chunk. The graph will get very heavy when using full text
+                // units over several documents. This may be a good feature to add after
+                // persistence to a graphdb. For now, accept the heavy nature and move forward.
+                occupied_entry.get_mut().evidence.extend(mention.evidence);
+                // Increment the weight
+                occupied_entry.get_mut().weight.0 += 1;
+            }
+            Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(GraphEdge {
+                    source: mention.source,
+                    target: mention.target,
+                    description: mention.description,
+                    evidence: mention.evidence,
+                    weight: EdgeWeight(1),
+                });
+            }
+        }
+    }
+
+    lookup.into_values().collect()
 }
 
 /// Deduplicates and consolidates ``EntityMentions``
