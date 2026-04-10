@@ -449,16 +449,43 @@ fn map_reduce_extract(
 
 fn extract_relationships(_text_unit: TextUnit) -> Vec<RelationshipMention> {
     // TODO LLM process needed here
+    // Identify candidate pairs
+    // for max tries
+        // Verify whether there are more pairs (Y/N)
+        // if Y identify more pairs
+        // else break
+    // Classify the pairs
+    // for max tries, pairs
+        // Verify whether classification is correct (Y/N)
+        // if N re-classify the entity
+        // else break
+    // Collect evidence of the relationship
+    // for max tries, pairs
+        // Verify whether evidence is valid (Y/N)
+        // if N re-classify the entity
+        // else break
     vec![]
 }
 
 fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
-    // TODO LLM process needed here
+    // Deterministic extraction from XML tags
+    // Determine canonical name (LLM for this?)
+    // Deterministic checking (discard invalid)
     vec![]
 }
 
 fn mark_entities(chunk: Chunk) -> TextUnit {
     // TODO LLM process needed here
+    // Mark the entities
+    // for max tries
+        // Verify whether there are more entities (Y/N)
+        // if Y Mark more entities
+        // else break
+    // Classify the entities
+    // for max tries, entities
+        // Verify whether classification is correct (Y/N)
+        // if N re-classify the entity
+        // else break
     let text = AnnotatedText(chunk.text.0);
     TextUnit {
         document_id: chunk.document_id,
@@ -491,6 +518,8 @@ fn consolidate_relationships(relationship_mentions: Vec<RelationshipMention>) ->
                 // persistence to a graphdb. For now, accept the heavy nature and move forward.
                 occupied_entry.get_mut().evidence.extend(mention.evidence);
                 // Increment the weight
+                // TODO consider a calculation that increases the weight according to the epistemic
+                // status of the underlying evidence.
                 occupied_entry.get_mut().weight.0 += 1;
             }
             Entry::Vacant(vacant_entry) => {
