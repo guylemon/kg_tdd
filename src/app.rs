@@ -1,4 +1,6 @@
 use serde::Serialize;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
@@ -67,7 +69,7 @@ impl From<GraphNode> for CyNodeData {
 struct NodeId(String);
 
 /// Newtype to prevent rogue string use
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 struct EntityName(String);
 
 /// Newtype to prevent rogue string use
@@ -268,8 +270,17 @@ struct GraphEdge {
     weight: EdgeWeight,
 }
 
-struct EntityMention;
-struct RelationshipMention;
+/// An LLM extracted entity from a source ``TextUnit``
+struct EntityMention {
+    description: NodeDescription,
+    entity_type: EntityType,
+    name: EntityName,
+    /// The source of duplicate ``EntityMentions`` will be folded into the ``GraphNode.mentions``
+    /// field.
+    source: TextUnit,
+}
+
+struct RelationshipMention {}
 
 // TODO remove public field and create initializer
 pub struct MaxConcurrency(pub u8);
@@ -453,10 +464,37 @@ fn mark_entities(chunk: Chunk) -> TextUnit {
 
 /// Deduplicate and resolve entities and relationships
 fn finalize_entities_relationships(
-    _entities: Vec<EntityMention>,
+    entities: Vec<EntityMention>,
     _relationships: Vec<RelationshipMention>,
 ) -> (Vec<GraphNode>, Vec<GraphEdge>) {
-    (vec![], vec![])
+    let nodes = consolidate_entities(entities);
+
+    (nodes, vec![])
+}
+
+/// Deduplicates and consolidates ``EntityMentions``
+fn consolidate_entities(entity_mentions: Vec<EntityMention>) -> Vec<GraphNode> {
+    let mut lookup: HashMap<EntityName, GraphNode> = HashMap::new();
+
+    for mention in entity_mentions {
+        // If the mention is in the map by name, add the current mention's source to the GraphNode
+        // mentions vector. Otherwise, insert a GraphNode created from the EntityMention.
+        match lookup.entry(mention.name.clone()) {
+            Entry::Occupied(mut occupied_entry) => {
+                occupied_entry.get_mut().mentions.push(mention.source);
+            }
+            Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(GraphNode {
+                    description: mention.description,
+                    entity_type: mention.entity_type,
+                    mentions: vec![mention.source],
+                    name: mention.name,
+                });
+            }
+        }
+    }
+
+    lookup.into_values().collect()
 }
 
 fn partition_document(_document: &Document) -> Vec<Chunk> {
