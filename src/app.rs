@@ -1,4 +1,7 @@
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::Read;
@@ -9,7 +12,7 @@ use std::sync::mpsc;
 
 const TODO_STRING: &str = "";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Todo;
 
 /// A serializable type used as input to the cytoscape JavaScript UI library.
@@ -235,7 +238,7 @@ struct AnnotatedText(String);
 struct DocumentId(String);
 
 #[derive(Debug, Serialize)]
-struct NonEmptyString(String);
+pub struct NonEmptyString(String);
 
 #[derive(Debug, Serialize)]
 struct TokenCount(usize);
@@ -317,22 +320,76 @@ struct Chunk {
     token_count: TokenCount,
 }
 
-pub struct App<R, W> {
+/// ``GenerateWithSchema`` is an interface supporting LLM generation tasks where output must
+/// conform to a provided generic type.
+pub trait GenerateWithSchema: Send + Sync {
+    type Error;
+
+    /// Get generated output from LLM conforming to the provided generic type.
+    /// Recommended implementation pattern:
+    ///
+    /// ```
+    /// let schema = schemars::schema_for!(T);
+    /// let schema_json = serde_json::to_string_pretty(&schema).unwrap();
+    /// ```
+    fn generate_with_schema<T>(
+        &self,
+        sys_prompt: NonEmptyString,
+        user_prompt: NonEmptyString,
+    ) -> Result<T, Self::Error>
+    where
+        T: DeserializeOwned + JsonSchema;
+}
+
+// NB this is egregious abuse of a struct :-)
+impl GenerateWithSchema for Todo {
+    type Error = Todo;
+
+    fn generate_with_schema<T>(
+        &self,
+        _sys_prompt: NonEmptyString,
+        _user_prompt: NonEmptyString,
+    ) -> Result<T, Self::Error>
+    where
+        T: DeserializeOwned + JsonSchema,
+    {
+        let schema = schemars::schema_for!(T);
+        let schema_json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // TODO this needs to be a real implementation
+        let response: T = serde_json::from_str(&schema_json).map_err(|_| Todo)?;
+
+        Ok(response)
+    }
+}
+
+pub struct App<R, W, C> {
     input_reader: R,
     cytoscape_writer: W,
+    llm_client: Arc<C>,
     /// The maximum number of threads to use when performing concurrent workloads during ingestion
     max_concurrency: MaxConcurrency,
 }
 
-impl<R, W> App<R, W>
+impl<R, W, C> App<R, W, C>
 where
     R: Read,
     W: Write,
+    C: GenerateWithSchema<Error = Todo> + 'static,
 {
-    pub fn new(input_reader: R, cytoscape_writer: W, max_concurrency: MaxConcurrency) -> Self {
+    pub fn new(
+        input_reader: R,
+        cytoscape_writer: W,
+        max_concurrency: MaxConcurrency,
+        llm_client: C,
+    ) -> Self {
+        // TODO should the Arc be created within the run fn?
+        let llm_client = Arc::new(llm_client);
+
         Self {
             input_reader,
             cytoscape_writer,
+            llm_client,
             max_concurrency,
         }
     }
@@ -354,7 +411,7 @@ where
         let chunks = partition_document(&document);
 
         let (entity_mentions, relationship_mentions) =
-            map_reduce_extract(&self.max_concurrency, chunks)?;
+            map_reduce_extract(&self.llm_client, &self.max_concurrency, chunks)?;
 
         let (nodes, edges): (Vec<GraphNode>, Vec<GraphEdge>) =
             finalize_entities_relationships(entity_mentions, relationship_mentions);
@@ -372,10 +429,14 @@ where
     }
 }
 
-fn map_reduce_extract(
+fn map_reduce_extract<C>(
+    llm_client: &Arc<C>,
     max_concurrency: &MaxConcurrency,
     chunks: Vec<Chunk>,
-) -> Result<(Vec<EntityMention>, Vec<RelationshipMention>), Todo> {
+) -> Result<(Vec<EntityMention>, Vec<RelationshipMention>), Todo>
+where
+    C: GenerateWithSchema<Error = Todo> + 'static,
+{
     // Cache the number of document chunks
     let num_chunks = chunks.len();
 
@@ -386,7 +447,7 @@ fn map_reduce_extract(
     let task_rx = Arc::new(Mutex::new(task_rx));
 
     // Extraction result FIFO queue
-    let (result_tx, result_rx) = mpsc::channel::<ExtractionResult>();
+    let (result_tx, result_rx) = mpsc::channel::<Result<ExtractionResult, Todo>>();
 
     let mut handles: Vec<std::thread::JoinHandle<()>> =
         Vec::with_capacity(max_concurrency.0.into());
@@ -395,6 +456,7 @@ fn map_reduce_extract(
     for _ in 0..max_concurrency.0 {
         let task_receiver = Arc::clone(&task_rx);
         let result_transmitter = result_tx.clone();
+        let llm = Arc::clone(llm_client);
 
         let handle = std::thread::spawn(move || {
             loop {
@@ -405,15 +467,23 @@ fn map_reduce_extract(
 
                 match task {
                     Ok(task) => {
-                        let marked: TextUnit = mark_entities(task.chunk);
+                        // TODO move max_passes to config
+                        let max_llm_passes = Some(1);
+                        let marked = match mark_entities(task.chunk, llm.as_ref(), max_llm_passes) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                let _ = result_transmitter.send(Err(e));
+                                continue;
+                            }
+                        };
                         let entities: Vec<EntityMention> = extract_entities(&marked);
                         let relationships: Vec<RelationshipMention> = extract_relationships(marked);
 
                         // Disregard TX error
-                        let _ = result_transmitter.send(ExtractionResult {
+                        let _ = result_transmitter.send(Ok(ExtractionResult {
                             entities,
                             relationships,
-                        });
+                        }));
                     }
                     Err(_) => break,
                 }
@@ -431,7 +501,8 @@ fn map_reduce_extract(
     let mut results = Vec::with_capacity(num_chunks);
     for _ in 0..num_chunks {
         let result = result_rx.recv().map_err(|_| Todo)?;
-        results.push(result);
+        let extraction = result?;
+        results.push(extraction);
     }
 
     // Reduce results to tuple
@@ -451,19 +522,19 @@ fn extract_relationships(_text_unit: TextUnit) -> Vec<RelationshipMention> {
     // TODO LLM process needed here
     // Identify candidate pairs
     // for max tries
-        // Verify whether there are more pairs (Y/N)
-        // if Y identify more pairs
-        // else break
+    // Verify whether there are more pairs (Y/N)
+    // if Y identify more pairs
+    // else break
     // Classify the pairs
     // for max tries, pairs
-        // Verify whether classification is correct (Y/N)
-        // if N re-classify the entity
-        // else break
+    // Verify whether classification is correct (Y/N)
+    // if N re-classify the entity
+    // else break
     // Collect evidence of the relationship
     // for max tries, pairs
-        // Verify whether evidence is valid (Y/N)
-        // if N re-classify the entity
-        // else break
+    // Verify whether evidence is valid (Y/N)
+    // if N re-classify the entity
+    // else break
     vec![]
 }
 
@@ -474,24 +545,34 @@ fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
     vec![]
 }
 
-fn mark_entities(chunk: Chunk) -> TextUnit {
-    // TODO LLM process needed here
-    // Mark the entities
+fn mark_entities<C>(
+    chunk: Chunk,
+    llm_client: &C,
+    max_llm_passes: Option<u8>,
+) -> Result<TextUnit, Todo>
+where
+    C: GenerateWithSchema<Error = Todo> + 'static,
+{
+    // - Entity marking
+    let sys_prompt = NonEmptyString(TODO_STRING.into());
+    let user_prompt = NonEmptyString(TODO_STRING.into());
+    let marked_entities = llm_client.generate_with_schema::<Todo>(sys_prompt, user_prompt)?;
+
     // for max tries
-        // Verify whether there are more entities (Y/N)
-        // if Y Mark more entities
-        // else break
+    // Verify whether there are more entities (Y/N)
+    // if Y Mark more entities
+    // else break
     // Classify the entities
     // for max tries, entities
-        // Verify whether classification is correct (Y/N)
-        // if N re-classify the entity
-        // else break
+    // Verify whether classification is correct (Y/N)
+    // if N re-classify the entity
+    // else break
     let text = AnnotatedText(chunk.text.0);
-    TextUnit {
+    Ok(TextUnit {
         document_id: chunk.document_id,
         text,
         token_count: chunk.token_count,
-    }
+    })
 }
 
 /// Deduplicate and resolve entities and relationships

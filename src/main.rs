@@ -4,6 +4,7 @@ use std::{io::Cursor, process};
 
 use crate::app::App;
 use crate::app::MaxConcurrency;
+use crate::app::Todo;
 
 fn main() {
     // TODO use stdin in near future. To support type-driven development, use this stub type.
@@ -16,7 +17,7 @@ fn main() {
 
     let max_concurrency = MaxConcurrency(4);
 
-    let application = App::new(input_reader, cytoscape_writer, max_concurrency);
+    let application = App::new(input_reader, cytoscape_writer, max_concurrency, Todo);
 
     // TODO no need to use debug when an error type is in place.
     if let Err(e) = application.run() {
