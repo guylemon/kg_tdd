@@ -6,7 +6,9 @@ mod ports;
 
 use std::process;
 
-use crate::adapters::{CliArgs, FakeSchemaLlmClient, FileDocumentSource, FileGraphArtifactSink, HubTokenizerSource};
+use crate::adapters::{
+    CliArgs, FakeSchemaLlmClient, FileDocumentSource, FileGraphArtifactSink, HubTokenizerSource,
+};
 use crate::app::App;
 use crate::application::MaxConcurrency;
 

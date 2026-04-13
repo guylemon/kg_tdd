@@ -17,7 +17,8 @@ impl DocumentSource for FileDocumentSource {
             return Err(AppError::invalid_input_path(input_path));
         }
 
-        let raw_text = fs::read_to_string(input_path).map_err(|_| AppError::read_input(input_path))?;
+        let raw_text =
+            fs::read_to_string(input_path).map_err(|_| AppError::read_input(input_path))?;
         if raw_text.trim().is_empty() {
             return Err(AppError::empty_input(input_path));
         }
@@ -114,7 +115,10 @@ mod tests {
             .read_document(&input_path)
             .expect_err("empty file should fail");
 
-        assert_eq!(err.to_string(), format!("input file is empty: {}", input_path.display()));
+        assert_eq!(
+            err.to_string(),
+            format!("input file is empty: {}", input_path.display())
+        );
     }
 
     #[test]
@@ -123,12 +127,21 @@ mod tests {
         let output_dir = dir.join("artifacts");
 
         FileGraphArtifactSink
-            .write_graph(&output_dir, &KnowledgeGraph { nodes: Vec::new(), edges: Vec::new() })
+            .write_graph(
+                &output_dir,
+                &KnowledgeGraph {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                },
+            )
             .expect("write graph");
 
         let graph_path = output_dir.join("graph.json");
         assert!(graph_path.is_file());
-        assert_eq!(fs::read_to_string(graph_path).expect("graph json"), r#"{"nodes":[],"edges":[]}"#);
+        assert_eq!(
+            fs::read_to_string(graph_path).expect("graph json"),
+            r#"{"nodes":[],"edges":[]}"#
+        );
     }
 
     #[test]

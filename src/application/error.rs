@@ -71,7 +71,11 @@ impl fmt::Display for AppError {
         match self {
             Self::Usage(message) => write!(f, "{message}"),
             Self::InvalidInputPath(path) => {
-                write!(f, "input path is invalid or does not exist: {}", display_path(path))
+                write!(
+                    f,
+                    "input path is invalid or does not exist: {}",
+                    display_path(path)
+                )
             }
             Self::ReadInput { path } => {
                 write!(f, "failed to read input file: {}", display_path(path))
@@ -83,7 +87,11 @@ impl fmt::Display for AppError {
             Self::ExtractChunk => write!(f, "failed to extract entities or relationships"),
             Self::ProjectGraph => write!(f, "failed to serialize graph output"),
             Self::CreateOutputDir { path } => {
-                write!(f, "failed to create output directory: {}", display_path(path))
+                write!(
+                    f,
+                    "failed to create output directory: {}",
+                    display_path(path)
+                )
             }
             Self::WriteOutput { path } => {
                 write!(f, "failed to write output file: {}", display_path(path))

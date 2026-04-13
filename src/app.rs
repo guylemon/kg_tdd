@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use crate::adapters::{
-    ParallelChunkExtractor, SchemaLlmClient, TokenizerSource,
-};
+use crate::adapters::{ParallelChunkExtractor, SchemaLlmClient, TokenizerSource};
 use crate::application::{AppError, IngestConfig, IngestDocumentService, MaxConcurrency};
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -122,7 +120,9 @@ mod tests {
             StubDocumentSource {
                 document: Document {
                     id: DocumentId(String::from("doc-1")),
-                    text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
                 },
             },
             &sink,
@@ -138,8 +138,20 @@ mod tests {
         assert!(writes[0].1.nodes.iter().any(|node| node.name.0 == "apple"));
         assert!(writes[0].1.nodes.iter().any(|node| node.name.0 == "fruit"));
         assert!(writes[0].1.nodes.iter().any(|node| node.name.0 == "trees"));
-        assert!(writes[0].1.edges.iter().any(|edge| matches!(edge.edge_type, crate::domain::RelationshipType::IsA)));
-        assert!(writes[0].1.edges.iter().any(|edge| matches!(edge.edge_type, crate::domain::RelationshipType::GrowsOn)));
+        assert!(
+            writes[0]
+                .1
+                .edges
+                .iter()
+                .any(|edge| matches!(edge.edge_type, crate::domain::RelationshipType::IsA))
+        );
+        assert!(
+            writes[0]
+                .1
+                .edges
+                .iter()
+                .any(|edge| matches!(edge.edge_type, crate::domain::RelationshipType::GrowsOn))
+        );
     }
 
     #[test]

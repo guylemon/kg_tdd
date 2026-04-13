@@ -35,14 +35,23 @@ impl CliArgs {
                 "--max-chunk-tokens" => {
                     set_usize_flag("--max-chunk-tokens", &mut max_chunk_tokens, args.next())?
                 }
-                other => return Err(AppError::usage(format!("unknown argument: {other}\n\n{}", usage()))),
+                other => {
+                    return Err(AppError::usage(format!(
+                        "unknown argument: {other}\n\n{}",
+                        usage()
+                    )));
+                }
             }
         }
 
-        let input_path = input_path
-            .ok_or_else(|| AppError::usage(format!("missing required flag: --input\n\n{}", usage())))?;
+        let input_path = input_path.ok_or_else(|| {
+            AppError::usage(format!("missing required flag: --input\n\n{}", usage()))
+        })?;
         let output_dir = output_dir.ok_or_else(|| {
-            AppError::usage(format!("missing required flag: --output-dir\n\n{}", usage()))
+            AppError::usage(format!(
+                "missing required flag: --output-dir\n\n{}",
+                usage()
+            ))
         })?;
 
         Ok(Self {
@@ -62,10 +71,14 @@ fn set_path_flag(
     value: Option<OsString>,
 ) -> Result<(), AppError> {
     if slot.is_some() {
-        return Err(AppError::usage(format!("duplicate flag: {flag}\n\n{}", usage())));
+        return Err(AppError::usage(format!(
+            "duplicate flag: {flag}\n\n{}",
+            usage()
+        )));
     }
 
-    let value = value.ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))?;
+    let value =
+        value.ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))?;
     *slot = Some(PathBuf::from(value));
     Ok(())
 }
@@ -76,10 +89,14 @@ fn set_string_flag(
     value: Option<OsString>,
 ) -> Result<(), AppError> {
     if slot.is_some() {
-        return Err(AppError::usage(format!("duplicate flag: {flag}\n\n{}", usage())));
+        return Err(AppError::usage(format!(
+            "duplicate flag: {flag}\n\n{}",
+            usage()
+        )));
     }
 
-    let value = value.ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))?;
+    let value =
+        value.ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))?;
     *slot = Some(value.to_string_lossy().into_owned());
     Ok(())
 }
@@ -90,17 +107,18 @@ fn set_usize_flag(
     value: Option<OsString>,
 ) -> Result<(), AppError> {
     if slot.is_some() {
-        return Err(AppError::usage(format!("duplicate flag: {flag}\n\n{}", usage())));
+        return Err(AppError::usage(format!(
+            "duplicate flag: {flag}\n\n{}",
+            usage()
+        )));
     }
 
-    let value = value.ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))?;
+    let value =
+        value.ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))?;
     let raw = value.to_string_lossy();
-    let parsed = raw.parse::<usize>().map_err(|_| {
-        AppError::usage(format!(
-            "invalid value for {flag}: {raw}\n\n{}",
-            usage()
-        ))
-    })?;
+    let parsed = raw
+        .parse::<usize>()
+        .map_err(|_| AppError::usage(format!("invalid value for {flag}: {raw}\n\n{}", usage())))?;
     *slot = Some(parsed);
     Ok(())
 }
@@ -183,6 +201,9 @@ mod tests {
             OsString::from("abc"),
         ])
         .expect_err("invalid number");
-        assert!(err.to_string().contains("invalid value for --max-chunk-tokens: abc"));
+        assert!(
+            err.to_string()
+                .contains("invalid value for --max-chunk-tokens: abc")
+        );
     }
 }
