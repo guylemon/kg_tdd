@@ -46,8 +46,9 @@ fn document_id_from_path(path: &Path) -> String {
     let display_name = path
         .file_stem()
         .or_else(|| path.file_name())
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_else(|| String::from("document"));
+        .map_or_else(|| String::from("document"), |value| {
+            value.to_string_lossy().into_owned()
+        });
 
     let mut slug = slugify(&display_name);
     if slug.is_empty() {

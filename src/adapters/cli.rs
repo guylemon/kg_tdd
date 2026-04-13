@@ -2,13 +2,11 @@ use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::application::{AppError, IngestConfig};
+use crate::application::{AppError, IngestConfig, MaxConcurrency, RunConfig};
 
 #[derive(Debug)]
 pub(crate) struct CliArgs {
-    pub(crate) input_path: PathBuf,
-    pub(crate) output_dir: PathBuf,
-    pub(crate) ingest_config: IngestConfig,
+    pub(crate) run_config: RunConfig,
 }
 
 impl CliArgs {
@@ -33,7 +31,7 @@ impl CliArgs {
                 "--output-dir" => set_path_flag("--output-dir", &mut output_dir, args.next())?,
                 "--tokenizer" => set_string_flag("--tokenizer", &mut tokenizer_name, args.next())?,
                 "--max-chunk-tokens" => {
-                    set_usize_flag("--max-chunk-tokens", &mut max_chunk_tokens, args.next())?
+                    set_usize_flag("--max-chunk-tokens", &mut max_chunk_tokens, args.next())?;
                 }
                 other => {
                     return Err(AppError::usage(format!(
@@ -55,11 +53,14 @@ impl CliArgs {
         })?;
 
         Ok(Self {
-            input_path,
-            output_dir,
-            ingest_config: IngestConfig {
-                tokenizer_name: tokenizer_name.unwrap_or_else(|| String::from("bert-base-cased")),
-                max_chunk_tokens: max_chunk_tokens.unwrap_or(128),
+            run_config: RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: tokenizer_name.unwrap_or_else(|| String::from("bert-base-cased")),
+                    max_chunk_tokens: max_chunk_tokens.unwrap_or(128),
+                },
+                input_path,
+                output_dir,
+                max_concurrency: MaxConcurrency(4),
             },
         })
     }
@@ -149,10 +150,10 @@ mod tests {
 
         let parsed = CliArgs::parse_from(args).expect("cli args");
 
-        assert_eq!(parsed.input_path, PathBuf::from("input.txt"));
-        assert_eq!(parsed.output_dir, PathBuf::from("out"));
-        assert_eq!(parsed.ingest_config.tokenizer_name, "bert-base-uncased");
-        assert_eq!(parsed.ingest_config.max_chunk_tokens, 64);
+        assert_eq!(parsed.run_config.input_path, PathBuf::from("input.txt"));
+        assert_eq!(parsed.run_config.output_dir, PathBuf::from("out"));
+        assert_eq!(parsed.run_config.ingest.tokenizer_name, "bert-base-uncased");
+        assert_eq!(parsed.run_config.ingest.max_chunk_tokens, 64);
     }
 
     #[test]
@@ -166,8 +167,8 @@ mod tests {
 
         let parsed = CliArgs::parse_from(args).expect("cli args");
 
-        assert_eq!(parsed.ingest_config.tokenizer_name, "bert-base-cased");
-        assert_eq!(parsed.ingest_config.max_chunk_tokens, 128);
+        assert_eq!(parsed.run_config.ingest.tokenizer_name, "bert-base-cased");
+        assert_eq!(parsed.run_config.ingest.max_chunk_tokens, 128);
     }
 
     #[test]

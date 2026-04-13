@@ -1,18 +1,13 @@
-use std::path::PathBuf;
-
 use crate::adapters::{ParallelChunkExtractor, SchemaLlmClient, TokenizerSource};
-use crate::application::{AppError, IngestConfig, IngestDocumentService, MaxConcurrency};
+use crate::application::{AppError, IngestDocumentService, RunConfig};
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
 pub struct App<S, G, C, T> {
-    config: IngestConfig,
-    input_path: PathBuf,
-    output_dir: PathBuf,
+    config: RunConfig,
     document_source: S,
     graph_sink: G,
     llm_client: C,
     tokenizer_source: T,
-    max_concurrency: MaxConcurrency,
 }
 
 impl<S, G, C, T> App<S, G, C, T>
@@ -23,10 +18,7 @@ where
     T: TokenizerSource,
 {
     pub fn new(
-        config: IngestConfig,
-        input_path: PathBuf,
-        output_dir: PathBuf,
-        max_concurrency: MaxConcurrency,
+        config: RunConfig,
         document_source: S,
         graph_sink: G,
         llm_client: C,
@@ -34,29 +26,26 @@ where
     ) -> Self {
         Self {
             config,
-            input_path,
-            output_dir,
             document_source,
             graph_sink,
             llm_client,
             tokenizer_source,
-            max_concurrency,
         }
     }
 
     pub fn run(self) -> Result<(), AppError> {
         let extractor = ParallelChunkExtractor::new(
-            self.config,
-            self.max_concurrency,
+            self.config.ingest,
+            self.config.max_concurrency,
             self.llm_client,
             &self.tokenizer_source,
         )?;
         let service = IngestDocumentService::new(extractor);
 
-        let document = self.document_source.read_document(&self.input_path)?;
+        let document = self.document_source.read_document(&self.config.input_path)?;
         let knowledge_graph = service.execute(&document)?;
         self.graph_sink
-            .write_graph(&self.output_dir, &knowledge_graph)?;
+            .write_graph(&self.config.output_dir, &knowledge_graph)?;
 
         Ok(())
     }
@@ -72,7 +61,7 @@ mod tests {
 
     use super::App;
     use crate::adapters::{FakeSchemaLlmClient, StaticTokenizerSource};
-    use crate::application::{AppError, IngestConfig, MaxConcurrency};
+    use crate::application::{AppError, IngestConfig, MaxConcurrency, RunConfig};
     use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
     use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -113,10 +102,12 @@ mod tests {
         };
         let sink = RecordingGraphSink::default();
         let app = App::new(
-            config,
-            PathBuf::from("fixtures/input.txt"),
-            PathBuf::from("out"),
-            MaxConcurrency(1),
+            RunConfig {
+                ingest: config,
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+            },
             StubDocumentSource {
                 document: Document {
                     id: DocumentId(String::from("doc-1")),
@@ -162,10 +153,12 @@ mod tests {
         };
         let sink = RecordingGraphSink::default();
         let app = App::new(
-            config,
-            PathBuf::from("fixtures/input.txt"),
-            PathBuf::from("out"),
-            MaxConcurrency(2),
+            RunConfig {
+                ingest: config,
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(2),
+            },
             StubDocumentSource {
                 document: Document {
                     id: DocumentId(String::from("doc-1")),
