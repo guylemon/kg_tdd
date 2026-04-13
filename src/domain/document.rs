@@ -3,6 +3,7 @@ use super::NonEmptyString;
 
 /// Represents a unit of source material for the graph produced by this application
 #[allow(unused)]
+#[derive(Debug)]
 pub(crate) struct Document {
     // TODO define how this is derived
     pub(crate) id: DocumentId,

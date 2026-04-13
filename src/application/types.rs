@@ -4,7 +4,7 @@ use crate::domain::{DocumentId, EntityMention, NonEmptyString, RelationshipMenti
 #[derive(Clone, Copy)]
 pub(crate) struct MaxConcurrency(pub u8);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct IngestConfig {
     pub(crate) tokenizer_name: String,
     pub(crate) max_chunk_tokens: usize,

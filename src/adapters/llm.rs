@@ -418,7 +418,7 @@ where
 fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError> {
     let encoding = tokenizer
         .encode(text, false)
-        .map_err(|_| AppError::PartitionDocument)?;
+        .map_err(|_| AppError::ExtractChunk)?;
     Ok(TokenCount(encoding.len()))
 }
 
@@ -517,7 +517,9 @@ mod tests {
                 &self,
                 _tokenizer_name: &str,
             ) -> Result<Tokenizer, crate::application::AppError> {
-                Err(crate::application::AppError::LoadTokenizer)
+                Err(crate::application::AppError::load_tokenizer(
+                    "missing-tokenizer",
+                ))
             }
         }
 
@@ -533,7 +535,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::application::AppError::LoadTokenizer)
+            Err(crate::application::AppError::LoadTokenizer(_))
         ));
     }
 
