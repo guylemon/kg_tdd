@@ -5,7 +5,7 @@ use super::DocumentId;
 use super::TokenCount;
 
 /// Represents a single chunk of a source document.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct TextUnit {
     /// The id of the source document
     pub(crate) document_id: DocumentId,

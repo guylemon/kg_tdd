@@ -4,6 +4,7 @@ use super::FactualClaim;
 use super::NodeId;
 use super::Todo;
 
+#[derive(Clone)]
 pub(crate) struct GraphEdge {
     pub(crate) source: NodeId,
     pub(crate) target: NodeId,

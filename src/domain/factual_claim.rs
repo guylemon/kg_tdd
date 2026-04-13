@@ -5,7 +5,7 @@ use super::Fact;
 use super::TextUnit;
 
 /// A factual claim that supports a proposed relationship between a source and target node.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct FactualClaim {
     /// The factual claim
     pub(crate) fact: Fact,

@@ -1,5 +1,5 @@
 use serde::Serialize;
 
 /// Newtype to prevent rogue string use
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct EdgeId(pub(crate) String);

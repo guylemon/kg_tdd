@@ -4,5 +4,5 @@ use serde::Serialize;
 ///
 /// - Raw text -> "I like apples"
 /// - Annotated text -> "<entity type=Person>I</entity> like <entity type=Lifeform>apples</entity>"
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct AnnotatedText(pub(crate) String);

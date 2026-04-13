@@ -1,4 +1,4 @@
 use serde::Serialize;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct TokenCount(pub(crate) usize);
