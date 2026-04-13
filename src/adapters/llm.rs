@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use text_splitter::{ChunkConfig, TextSplitter};
 
+use log::debug;
+
 use crate::adapters::TokenizerSource;
 use crate::application::{
     AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency, ProviderConfig, ProviderMode,
@@ -21,6 +23,8 @@ use ureq::Agent;
 const PROVIDER_TIMEOUT_SECS: u64 = 30;
 const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_MAX_TOKENS: u16 = 512;
+const PROVIDER_RESPONSE_SNIPPET_LEN: usize = 240;
+const RAW_PROVIDER_DEBUG_ENV: &str = "KG_DEBUG_RAW_PROVIDER";
 
 pub(crate) trait SchemaLlmClient: Send + Sync {
     fn generate_with_schema<T>(
@@ -39,6 +43,10 @@ pub(crate) enum ConfiguredSchemaLlmClient {
 
 impl ConfiguredSchemaLlmClient {
     pub(crate) fn from_config(config: &ProviderConfig) -> Result<Self, AppError> {
+        debug!(
+            "configuring schema LLM client for provider_mode={:?}",
+            config.mode
+        );
         match config.mode {
             ProviderMode::Fixture => Ok(Self::Fixture(FakeSchemaLlmClient)),
             ProviderMode::OpenAiCompatible => Ok(Self::OpenAiCompatible(
@@ -75,6 +83,11 @@ impl SchemaLlmClient for FakeSchemaLlmClient {
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
+        debug!(
+            "using fixture schema client for {} with user_prompt_len={}",
+            std::any::type_name::<T>(),
+            user_prompt.0.len()
+        );
         let payload =
             if std::any::TypeId::of::<T>() == std::any::TypeId::of::<AiExtractionResponse>() {
                 fixture_entities(&user_prompt.0)
@@ -120,6 +133,13 @@ impl OpenAiCompatibleSchemaLlmClient {
             .build();
         let api_key = std::env::var("KG_PROVIDER_API_KEY").ok();
 
+        debug!(
+            "configured openai-compatible client: base_url={}, model={}, has_api_key={}",
+            base_url,
+            model,
+            api_key.is_some()
+        );
+
         Ok(Self {
             agent: agent_config.into(),
             base_url: trim_trailing_slash(&base_url),
@@ -138,6 +158,17 @@ impl OpenAiCompatibleSchemaLlmClient {
     {
         let endpoint = format!("{}/v1/chat/completions", self.base_url);
         let body = build_chat_request::<T>(&self.model, sys_prompt, user_prompt)?;
+        let request_json = serde_json::to_string(&body)
+            .map_err(|_| AppError::provider_response("failed to serialize provider request body"))?;
+        let schema_name = std::any::type_name::<T>();
+
+        log_provider_request(
+            schema_name,
+            endpoint.as_str(),
+            &self.model,
+            &body,
+            &request_json,
+        );
 
         let mut request = self
             .agent
@@ -148,17 +179,42 @@ impl OpenAiCompatibleSchemaLlmClient {
         }
 
         let mut response = match request.send_json(&body) {
-            Ok(response) => response,
+            Ok(response) => {
+                debug!(
+                    "provider request succeeded: schema={schema_name}, endpoint={endpoint}"
+                );
+                response
+            }
             Err(ureq::Error::StatusCode(code)) => {
+                debug!(
+                    "provider request returned non-success status: schema={schema_name}, endpoint={endpoint}, status={code}"
+                );
                 return Err(classify_status_code(code, endpoint.as_str()));
             }
-            Err(error) => return Err(classify_transport_error(error, endpoint.as_str())),
+            Err(error) => {
+                debug!(
+                    "provider request failed before response parsing: schema={schema_name}, endpoint={endpoint}, error={error}"
+                );
+                return Err(classify_transport_error(error, endpoint.as_str()));
+            }
         };
 
-        let response_body: ChatCompletionResponse = response
+        let response_text = response
             .body_mut()
-            .read_json()
-            .map_err(|_| AppError::provider_response("response body is not valid JSON"))?;
+            .read_to_string()
+            .map_err(|_| AppError::provider_response("response body is not valid UTF-8 text"))?;
+        log_provider_response(schema_name, endpoint.as_str(), &response_text);
+
+        let response_body: ChatCompletionResponse = serde_json::from_str(&response_text)
+            .map_err(|_| {
+                debug!(
+                    "provider response JSON parse failed: schema={}, endpoint={}, snippet={}",
+                    schema_name,
+                    endpoint,
+                    snippet(&response_text, PROVIDER_RESPONSE_SNIPPET_LEN)
+                );
+                AppError::provider_response("response body is not valid JSON")
+            })?;
 
         let content = response_body
             .choices
@@ -166,11 +222,31 @@ impl OpenAiCompatibleSchemaLlmClient {
             .next()
             .and_then(|choice| choice.message.content)
             .ok_or_else(|| {
+                debug!(
+                    "provider response missing assistant message content: schema={schema_name}, endpoint={endpoint}"
+                );
                 AppError::provider_response("assistant message content missing from response")
             })?;
 
-        serde_json::from_str(&content)
-            .map_err(|_| AppError::provider_response("assistant content does not match schema"))
+        if raw_provider_debug_enabled() {
+            debug!("raw provider assistant content for {schema_name}: {content}");
+        } else {
+            debug!(
+                "provider assistant content summary for {}: len={}, snippet={}",
+                schema_name,
+                content.len(),
+                snippet(&content, PROVIDER_RESPONSE_SNIPPET_LEN)
+            );
+        }
+
+        serde_json::from_str(&content).map_err(|_| {
+            debug!(
+                "provider assistant content schema mismatch: schema={}, snippet={}",
+                schema_name,
+                snippet(&content, PROVIDER_RESPONSE_SNIPPET_LEN)
+            );
+            AppError::provider_response("assistant content does not match schema")
+        })
     }
 }
 
@@ -183,9 +259,28 @@ impl SchemaLlmClient for OpenAiCompatibleSchemaLlmClient {
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        retry_operation(PROVIDER_MAX_RETRIES, || {
-            self.call_once::<T>(sys_prompt.clone(), user_prompt.clone())
-        })
+        let schema_name = std::any::type_name::<T>();
+        let mut attempts = 0;
+
+        loop {
+            attempts += 1;
+            debug!(
+                "provider attempt {attempts} for schema={schema_name} (max_retries={PROVIDER_MAX_RETRIES})"
+            );
+
+            match self.call_once::<T>(sys_prompt.clone(), user_prompt.clone()) {
+                Ok(value) => return Ok(value),
+                Err(err) if is_retryable(&err) && attempts <= PROVIDER_MAX_RETRIES => {
+                    debug!("retrying provider request for schema={schema_name} after error={err}");
+                }
+                Err(err) => {
+                    debug!(
+                        "provider request failed for schema={schema_name} after {attempts} attempt(s): {err}"
+                    );
+                    return Err(err);
+                }
+            }
+        }
     }
 }
 
@@ -229,7 +324,7 @@ where
             ChunkConfig::new(self.config.max_chunk_tokens).with_sizer(self.tokenizer.clone());
         let splitter = TextSplitter::new(config);
 
-        splitter
+        let chunks: Vec<_> = splitter
             .chunks(&document.text.0)
             .map(|text| {
                 let text = text.to_owned();
@@ -240,7 +335,15 @@ where
                     token_count,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, AppError>>()?;
+
+        debug!(
+            "partitioned document {} into {} chunk(s)",
+            document.id.0,
+            chunks.len()
+        );
+
+        Ok(chunks)
     }
 }
 
@@ -400,10 +503,21 @@ fn extract_chunk<C>(chunk: Chunk, llm_client: &C) -> Result<ExtractionOutcome, A
 where
     C: SchemaLlmClient + 'static,
 {
+    debug!(
+        "extracting chunk for document={} with token_count={}",
+        chunk.document_id.0,
+        chunk.token_count.0
+    );
     let entity_response = request_entity_extraction(&chunk.text, llm_client)?;
     let marked = mark_entities(chunk, &entity_response);
     let entities = extract_entities(&marked, entity_response);
     let relationships = extract_relationships(&marked, llm_client)?;
+
+    debug!(
+        "finished chunk extraction: entities={}, relationships={}",
+        entities.len(),
+        relationships.len()
+    );
 
     Ok(ExtractionOutcome {
         entities,
@@ -725,6 +839,7 @@ fn is_retryable(error: &AppError) -> bool {
     )
 }
 
+#[cfg(test)]
 fn retry_operation<T, F>(max_retries: usize, mut operation: F) -> Result<T, AppError>
 where
     F: FnMut() -> Result<T, AppError>,
@@ -739,6 +854,69 @@ where
             Err(err) => return Err(err),
         }
     }
+}
+
+fn raw_provider_debug_enabled() -> bool {
+    matches!(
+        std::env::var(RAW_PROVIDER_DEBUG_ENV).ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
+fn log_provider_request(
+    schema_name: &str,
+    endpoint: &str,
+    model: &str,
+    body: &ChatCompletionRequest,
+    request_json: &str,
+) {
+    if raw_provider_debug_enabled() {
+        debug!(
+            "raw provider request for schema={schema_name}, endpoint={endpoint}, model={model}: {request_json}"
+        );
+        return;
+    }
+
+    let system_prompt_len = body
+        .messages
+        .iter()
+        .find(|message| message.role == "system")
+        .map_or(0, |message| message.content.len());
+    let user_prompt_len = body
+        .messages
+        .iter()
+        .find(|message| message.role == "user")
+        .map_or(0, |message| message.content.len());
+
+    debug!(
+        "provider request summary: schema={schema_name}, endpoint={endpoint}, model={model}, request_bytes={}, system_prompt_len={}, user_prompt_len={}",
+        request_json.len(),
+        system_prompt_len,
+        user_prompt_len
+    );
+}
+
+fn log_provider_response(schema_name: &str, endpoint: &str, response_text: &str) {
+    if raw_provider_debug_enabled() {
+        debug!("raw provider response for schema={schema_name}, endpoint={endpoint}: {response_text}");
+        return;
+    }
+
+    debug!(
+        "provider response summary: schema={schema_name}, endpoint={endpoint}, response_bytes={}, snippet={}",
+        response_text.len(),
+        snippet(response_text, PROVIDER_RESPONSE_SNIPPET_LEN)
+    );
+}
+
+fn snippet(value: &str, max_len: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_len {
+        return value.to_owned();
+    }
+
+    let prefix: String = value.chars().take(max_len).collect();
+    format!("{prefix}...")
 }
 
 #[cfg(test)]

@@ -3,6 +3,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
+use log::debug;
+
 use crate::application::AppError;
 use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
 use crate::ports::{DocumentSource, GraphArtifactSink};
@@ -13,6 +15,7 @@ pub(crate) struct FileDocumentSource;
 
 impl DocumentSource for FileDocumentSource {
     fn read_document(&self, input_path: &Path) -> Result<Document, AppError> {
+        debug!("reading document from {}", input_path.display());
         if !input_path.is_file() {
             return Err(AppError::invalid_input_path(input_path));
         }
@@ -22,6 +25,12 @@ impl DocumentSource for FileDocumentSource {
         if raw_text.trim().is_empty() {
             return Err(AppError::empty_input(input_path));
         }
+
+        debug!(
+            "read document from {} ({} bytes)",
+            input_path.display(),
+            raw_text.len()
+        );
 
         Ok(Document {
             id: DocumentId(document_id_from_path(input_path)),
@@ -34,6 +43,12 @@ pub(crate) struct FileGraphArtifactSink;
 
 impl GraphArtifactSink for FileGraphArtifactSink {
     fn write_graph(&self, output_dir: &Path, graph: &KnowledgeGraph) -> Result<(), AppError> {
+        debug!(
+            "writing graph artifact bundle to {} (nodes={}, edges={})",
+            output_dir.display(),
+            graph.nodes.len(),
+            graph.edges.len()
+        );
         fs::create_dir_all(output_dir).map_err(|_| AppError::create_output_dir(output_dir))?;
 
         let graph_path = output_dir.join("graph.json");
@@ -50,6 +65,11 @@ impl GraphArtifactSink for FileGraphArtifactSink {
 fn copy_viewer_asset(output_dir: &Path, file_name: &str) -> Result<(), AppError> {
     let source_path = viewer_asset_path(file_name);
     let target_path = output_dir.join(file_name);
+    debug!(
+        "copying viewer asset {} to {}",
+        source_path.display(),
+        target_path.display()
+    );
     fs::copy(&source_path, &target_path).map_err(|_| AppError::write_output(target_path))?;
     Ok(())
 }

@@ -92,6 +92,36 @@ If your server requires bearer auth, set:
 export KG_PROVIDER_API_KEY=your-token
 ```
 
+## Logging
+
+The CLI uses `env_logger`, so log output is controlled through `RUST_LOG` and is written to stderr.
+
+Enable normal debug logging:
+
+```bash
+RUST_LOG=debug cargo run -- --input fixtures/seed.txt --output-dir out
+```
+
+Write debug logs to a file:
+
+```bash
+RUST_LOG=debug cargo run -- --input fixtures/seed.txt --output-dir out 2>kg_tdd.log
+```
+
+For live provider debugging, full raw prompts and raw provider responses are available behind an explicit opt-in flag:
+
+```bash
+RUST_LOG=debug KG_DEBUG_RAW_PROVIDER=1 cargo run -- --input fixtures/seed.txt --output-dir out
+```
+
+You can combine that with log redirection:
+
+```bash
+RUST_LOG=debug KG_DEBUG_RAW_PROVIDER=1 cargo run -- --input fixtures/seed.txt --output-dir out 2>kg_tdd.log
+```
+
+`KG_DEBUG_RAW_PROVIDER=1` is intended for local diagnosis of schema and parsing failures. It may log full prompt and response content, so avoid using it with sensitive inputs unless that is acceptable for your environment.
+
 ## Artifact Contract
 
 The generated output directory is intended to be portable and inspectable as static files.

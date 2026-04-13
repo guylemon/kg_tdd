@@ -1,3 +1,5 @@
+use log::debug;
+
 use crate::adapters::{ParallelChunkExtractor, SchemaLlmClient, TokenizerSource};
 use crate::application::{AppError, IngestDocumentService, RunConfig};
 use crate::ports::{DocumentSource, GraphArtifactSink};
@@ -34,6 +36,14 @@ where
     }
 
     pub fn run(self) -> Result<(), AppError> {
+        debug!(
+            "starting app run: provider_mode={:?}, input_path={}, output_dir={}, max_chunk_tokens={}",
+            self.config.provider.mode,
+            self.config.input_path.display(),
+            self.config.output_dir.display(),
+            self.config.ingest.max_chunk_tokens
+        );
+
         let extractor = ParallelChunkExtractor::new(
             self.config.ingest,
             self.config.max_concurrency,
@@ -42,12 +52,32 @@ where
         )?;
         let service = IngestDocumentService::new(extractor);
 
+        debug!(
+            "reading source document from {}",
+            self.config.input_path.display()
+        );
         let document = self
             .document_source
             .read_document(&self.config.input_path)?;
+        debug!(
+            "loaded document {} with {} bytes of text",
+            document.id.0,
+            document.text.0.len()
+        );
+
         let knowledge_graph = service.execute(&document)?;
+        debug!(
+            "ingestion complete: nodes={}, edges={}",
+            knowledge_graph.nodes.len(),
+            knowledge_graph.edges.len()
+        );
+
         self.graph_sink
             .write_graph(&self.config.output_dir, &knowledge_graph)?;
+        debug!(
+            "wrote graph artifact bundle to {}",
+            self.config.output_dir.display()
+        );
 
         Ok(())
     }
