@@ -1,7 +1,6 @@
 use crate::application::error::AppError;
 use crate::domain::{
-    consolidate_entities, consolidate_relationships, Document, GraphEdge, GraphNode,
-    KnowledgeGraph,
+    Document, GraphEdge, GraphNode, KnowledgeGraph, consolidate_entities, consolidate_relationships,
 };
 use crate::ports::{ChunkExtractor, DocumentPartitioner};
 
@@ -115,7 +114,9 @@ mod tests {
         let chunk = sample_chunk();
         let text_unit = TextUnit {
             document_id: DocumentId(String::from("doc-1")),
-            text: AnnotatedText(String::from("<entity>Alice</entity> met <entity>Bob</entity>")),
+            text: AnnotatedText(String::from(
+                "<entity>Alice</entity> met <entity>Bob</entity>",
+            )),
             token_count: TokenCount(8),
         };
         let extractor = FakeExtractor {

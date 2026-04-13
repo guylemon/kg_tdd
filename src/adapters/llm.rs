@@ -2,15 +2,15 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use text_splitter::{ChunkConfig, TextSplitter};
 
 use crate::adapters::TokenizerSource;
 use crate::application::{AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency};
 use crate::domain::{
     AnnotatedText, EdgeDescription, EntityMention, EntityName, EntityType, EpistemicStatus, Fact,
-    FactualClaim, NodeDescription, NodeId, NonEmptyString, RelationshipMention,
-    RelationshipType, TextUnit, Todo, TokenCount,
+    FactualClaim, NodeDescription, NodeId, NonEmptyString, RelationshipMention, RelationshipType,
+    TextUnit, Todo, TokenCount,
 };
 use crate::ports::{ChunkExtractor, DocumentPartitioner};
 use tokenizers::Tokenizer;
@@ -99,7 +99,8 @@ where
     C: SchemaLlmClient + 'static,
 {
     fn partition(&self, document: &crate::domain::Document) -> Result<Vec<Chunk>, AppError> {
-        let config = ChunkConfig::new(self.config.max_chunk_tokens).with_sizer(self.tokenizer.clone());
+        let config =
+            ChunkConfig::new(self.config.max_chunk_tokens).with_sizer(self.tokenizer.clone());
         let splitter = TextSplitter::new(config);
 
         splitter
@@ -300,7 +301,10 @@ fn annotate_text(text: String, response: &AiExtractionResponse) -> String {
     entities.sort_by(|left, right| right.name.len().cmp(&left.name.len()));
 
     for entity in entities {
-        let annotation = format!("<entity type=\"{:?}\">{}</entity>", entity.entity_type, entity.name);
+        let annotation = format!(
+            "<entity type=\"{:?}\">{}</entity>",
+            entity.entity_type, entity.name
+        );
         result = result.replace(&entity.name, &annotation);
     }
     result
@@ -314,7 +318,13 @@ fn slugify(value: &str) -> String {
     value
         .to_lowercase()
         .chars()
-        .map(|char| if char.is_ascii_alphanumeric() { char } else { '-' })
+        .map(|char| {
+            if char.is_ascii_alphanumeric() {
+                char
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -414,14 +424,14 @@ fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_chunk, FakeSchemaLlmClient, ParallelChunkExtractor};
+    use super::{FakeSchemaLlmClient, ParallelChunkExtractor, extract_chunk};
     use crate::adapters::StaticTokenizerSource;
     use crate::application::{Chunk, IngestConfig, MaxConcurrency};
     use crate::domain::{Document, DocumentId, NonEmptyString};
     use crate::ports::DocumentPartitioner;
+    use tokenizers::Tokenizer;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
-    use tokenizers::Tokenizer;
 
     #[test]
     fn partitions_document_into_single_chunk() {
@@ -488,8 +498,14 @@ mod tests {
 
         assert_eq!(chunks.len(), 2);
         assert!(chunks.iter().all(|chunk| chunk.token_count.0 <= 12));
-        assert_eq!(chunks[0].text.0, "An apple is a red fruit that grows on trees.");
-        assert_eq!(chunks[1].text.0, "An apple is a red fruit that grows on trees.");
+        assert_eq!(
+            chunks[0].text.0,
+            "An apple is a red fruit that grows on trees."
+        );
+        assert_eq!(
+            chunks[1].text.0,
+            "An apple is a red fruit that grows on trees."
+        );
     }
 
     #[test]
@@ -497,7 +513,10 @@ mod tests {
         struct BrokenTokenizerSource;
 
         impl crate::adapters::TokenizerSource for BrokenTokenizerSource {
-            fn load(&self, _tokenizer_name: &str) -> Result<Tokenizer, crate::application::AppError> {
+            fn load(
+                &self,
+                _tokenizer_name: &str,
+            ) -> Result<Tokenizer, crate::application::AppError> {
                 Err(crate::application::AppError::LoadTokenizer)
             }
         }
@@ -512,7 +531,10 @@ mod tests {
             BrokenTokenizerSource,
         );
 
-        assert!(matches!(result, Err(crate::application::AppError::LoadTokenizer)));
+        assert!(matches!(
+            result,
+            Err(crate::application::AppError::LoadTokenizer)
+        ));
     }
 
     fn build_test_tokenizer() -> Tokenizer {

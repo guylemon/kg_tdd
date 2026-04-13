@@ -1,6 +1,4 @@
-use crate::domain::{
-    DocumentId, EntityMention, NonEmptyString, RelationshipMention, TokenCount,
-};
+use crate::domain::{DocumentId, EntityMention, NonEmptyString, RelationshipMention, TokenCount};
 
 // TODO remove public field and create initializer
 #[derive(Clone, Copy)]

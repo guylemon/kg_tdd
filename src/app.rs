@@ -66,9 +66,9 @@ mod tests {
     use std::io::{Cursor, Write};
     use std::rc::Rc;
 
+    use tokenizers::Tokenizer;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
-    use tokenizers::Tokenizer;
 
     use super::App;
     use crate::adapters::{FakeSchemaLlmClient, StaticTokenizerSource};

@@ -25,8 +25,8 @@ impl TokenizerSource for HubTokenizerSource {
             return Ok(tokenizer);
         }
 
-        let tokenizer =
-            Tokenizer::from_pretrained(tokenizer_name, None).map_err(|_| AppError::LoadTokenizer)?;
+        let tokenizer = Tokenizer::from_pretrained(tokenizer_name, None)
+            .map_err(|_| AppError::LoadTokenizer)?;
 
         cache
             .lock()

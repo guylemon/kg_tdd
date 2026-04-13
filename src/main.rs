@@ -1,8 +1,8 @@
+mod adapters;
+mod app;
+mod application;
 mod domain;
 mod ports;
-mod adapters;
-mod application;
-mod app;
 
 use std::{io, process};
 
