@@ -127,6 +127,9 @@ struct CyEdgeData {
     /// The target node identifier
     target: NodeId,
 
+    /// The type of relationship
+    edge_type: Todo,
+
     /// An LLM generated summary of the relationship between the source and target nodes
     description: EdgeDescription,
 
@@ -145,6 +148,7 @@ impl From<GraphEdge> for CyEdgeData {
             source: edge.source,
             target: edge.target,
             description: edge.description,
+            edge_type: edge.edge_type,
             evidence: edge.evidence,
             weight: edge.weight,
         }
@@ -268,6 +272,7 @@ struct GraphNode {
 struct GraphEdge {
     source: NodeId,
     target: NodeId,
+    edge_type: Todo,
     description: EdgeDescription,
     evidence: Vec<FactualClaim>,
     weight: EdgeWeight,
@@ -288,6 +293,7 @@ struct RelationshipMention {
     target: NodeId,
     description: EdgeDescription,
     evidence: Vec<FactualClaim>,
+    relationship_type: Todo,
 }
 
 // TODO remove public field and create initializer
@@ -475,7 +481,14 @@ where
                             }
                         };
                         let entities: Vec<EntityMention> = extract_entities(&marked);
-                        let relationships: Vec<RelationshipMention> = extract_relationships(marked);
+                        let relationships: Vec<RelationshipMention> =
+                            match extract_relationships(marked, llm.as_ref()) {
+                                Ok(val) => val,
+                                Err(e) => {
+                                    let _ = result_transmitter.send(Err(e));
+                                    continue;
+                                }
+                            };
 
                         // Disregard TX error
                         let _ = result_transmitter.send(Ok(ExtractionResult {
@@ -516,29 +529,64 @@ where
     Ok(aggregated_results)
 }
 
-fn extract_relationships(_text_unit: TextUnit) -> Vec<RelationshipMention> {
-    // TODO LLM process needed here
-    // Identify candidate pairs based upon rules
-    // for max tries
-    // Verify whether there are more pairs (Y/N)
-    // if Y identify more pairs
-    // else break
-    // Classify the pairs
-    // for max tries, pairs
-    // Verify whether classification is correct (Y/N)
-    // if N re-classify the entity
-    // else break
-    // Collect evidence of the relationship
-    // for max tries, pairs
-    // Verify whether evidence is valid (Y/N)
-    // if N re-classify the entity
-    // else break
-    vec![]
+#[derive(Deserialize, JsonSchema, Serialize)]
+struct RelationshipExtract {
+    relation: Todo,
+    source: String,
+    target: String,
+    relationship_type: Todo,
+    description: String,
+}
+
+#[derive(Deserialize, JsonSchema, Serialize)]
+struct AiRelationshipExtractionResponse {
+    relationships: Vec<RelationshipExtract>,
+}
+
+fn extract_relationships<C>(
+    _text_unit: TextUnit,
+    llm_client: &C,
+) -> Result<Vec<RelationshipMention>, Todo>
+where
+    C: GenerateWithSchema<Error = Todo> + 'static,
+{
+    let relationship_types: Vec<Todo> = Vec::new();
+    let mut extracted_relationships: Vec<RelationshipExtract> = Vec::new();
+
+    // TODO configure max passes for this step?
+    // TODO replace entities in text with canonical entity name before extraction?
+    for _relationship_type in &relationship_types {
+        // extract {relationship_type} from {annotated_text} to JSON response;
+        //  {"relationships": [{ "relationship_type": {relationship_type}, "source": {entity},
+        //  "target": {entity}, "description": {description},  ] }
+        //  OR { "relationships": [] } if no relationships of type in text
+        let sys_prompt = NonEmptyString(TODO_STRING.into());
+        let user_prompt = NonEmptyString(TODO_STRING.into());
+        let response = llm_client
+            .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
+
+        extracted_relationships.extend(response.relationships);
+    }
+
+    // TODO Additional validation may be needed here to ensure that the canonical entity name was
+    // used.
+    let ret = extracted_relationships
+        .into_iter()
+        .map(|er| RelationshipMention {
+            source: NodeId(er.source),
+            target: NodeId(er.target),
+            description: EdgeDescription(er.description),
+            evidence: Vec::new(),
+            relationship_type: er.relationship_type,
+        })
+        .collect();
+
+    Ok(ret)
 }
 
 fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
     // Deterministic extraction from XML tags
-    // Determine canonical name (LLM for this?)
+    // Canonicalize name
     // Deterministic checking (discard invalid)
     vec![]
 }
@@ -555,7 +603,7 @@ where
     C: GenerateWithSchema<Error = Todo> + 'static,
 {
     let mut text = chunk.text.0;
-    let tmp: Vec<String> = Vec::new();
+    let tmp: Vec<Todo> = Vec::new();
 
     // Accumulate entity markings for entities, e.g., <entity type={entity_type}>asdf</entity>
     // For entity_type in supported_entities
@@ -621,6 +669,7 @@ fn consolidate_relationships(relationship_mentions: Vec<RelationshipMention>) ->
                 vacant_entry.insert(GraphEdge {
                     source: mention.source,
                     target: mention.target,
+                    edge_type: mention.relationship_type,
                     description: mention.description,
                     evidence: mention.evidence,
                     weight: EdgeWeight(1),
