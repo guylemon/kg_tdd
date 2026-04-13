@@ -3,8 +3,6 @@ use std::io::{Read, Write};
 use crate::application::AppError;
 use crate::domain::{Document, DocumentId, NonEmptyString};
 
-const TODO_STRING: &str = "";
-
 pub(crate) struct ReadDocumentSource<R> {
     reader: R,
 }
@@ -23,8 +21,12 @@ where
             .read_to_string(&mut raw_text)
             .map_err(|_| AppError::ReadInput)?;
 
+        if raw_text.trim().is_empty() {
+            return Err(AppError::ReadInput);
+        }
+
         Ok(Document {
-            id: DocumentId(TODO_STRING.to_owned()),
+            id: DocumentId(String::from("stdin-document")),
             text: NonEmptyString(raw_text),
         })
     }

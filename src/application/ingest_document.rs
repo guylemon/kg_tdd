@@ -52,8 +52,8 @@ mod tests {
     use crate::application::{AppError, Chunk, ExtractionOutcome};
     use crate::domain::{
         AnnotatedText, Document, DocumentId, EdgeDescription, EntityMention, EntityName,
-        EntityType, NodeDescription, NonEmptyString, RelationshipMention, TextUnit, Todo,
-        TokenCount,
+        EntityType, NodeDescription, NonEmptyString, RelationshipMention, RelationshipType,
+        TextUnit, TokenCount,
     };
     use crate::ports::{ChunkExtractor, DocumentPartitioner};
     use std::cell::RefCell;
@@ -140,7 +140,7 @@ mod tests {
                     target: crate::domain::NodeId(String::from("Bob")),
                     description: EdgeDescription(String::from("knows")),
                     evidence: Vec::new(),
-                    relationship_type: Todo,
+                    relationship_type: RelationshipType::IsA,
                 }],
             })]),
         };
