@@ -1,3 +1,22 @@
+use crate::domain::AnnotatedText;
+use crate::domain::Document;
+use crate::domain::DocumentId;
+use crate::domain::EdgeDescription;
+use crate::domain::EdgeId;
+use crate::domain::EdgeWeight;
+use crate::domain::EntityMention;
+use crate::domain::EntityName;
+use crate::domain::EntityType;
+use crate::domain::FactualClaim;
+use crate::domain::GraphEdge;
+use crate::domain::GraphNode;
+use crate::domain::KnowledgeGraph;
+use crate::domain::NodeDescription;
+use crate::domain::NodeId;
+use crate::domain::NonEmptyString;
+use crate::domain::RelationshipMention;
+use crate::domain::TextUnit;
+use crate::domain::TokenCount;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -12,8 +31,7 @@ use std::sync::mpsc;
 
 const TODO_STRING: &str = "";
 
-#[derive(Debug, Deserialize, JsonSchema, Serialize)]
-pub struct Todo;
+pub use crate::domain::Todo;
 
 /// A serializable type used as input to the cytoscape JavaScript UI library.
 /// See more: <https://js.cytoscape.org/#notation/elements-json>
@@ -66,57 +84,6 @@ impl From<GraphNode> for CyNodeData {
     }
 }
 
-// Support efficient transformation to CyNodeData from the GraphNode types
-/// Newtype to prevent rogue string use
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-struct NodeId(String);
-
-/// Newtype to prevent rogue string use
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-struct EntityName(String);
-
-/// Newtype to prevent rogue string use
-#[derive(Debug, Serialize)]
-struct NodeDescription(String);
-
-/// The supported Entity types for this application
-// TODO remove unused allow rule
-#[derive(Debug, Serialize)]
-enum EntityType {
-    /// Theoretical ideas, methodologies, approaches
-    #[allow(unused)]
-    Concept,
-
-    /// Conferences, releases, historical events
-    #[allow(unused)]
-    Event,
-
-    /// A biological lifeform, such as a plant, animal, insect. Given the current context, it is not a
-    /// product.
-    #[allow(unused)]
-    Lifeform,
-
-    /// Cities, countries, regions
-    #[allow(unused)]
-    Location,
-
-    /// Companies, institutions, or universities
-    #[allow(unused)]
-    Organization,
-
-    /// People mentioned in the chunk text
-    #[allow(unused)]
-    Person,
-
-    /// Software products, platforms, services
-    #[allow(unused)]
-    Product,
-
-    /// Frameworks, programming languages, algorithms
-    #[allow(unused)]
-    Technology,
-}
-
 #[derive(Debug, Serialize)]
 struct CyEdgeData {
     id: EdgeId,
@@ -153,147 +120,6 @@ impl From<GraphEdge> for CyEdgeData {
             weight: edge.weight,
         }
     }
-}
-
-// TODO It is unclear which type of number to use at this time.
-#[derive(Debug, Serialize)]
-struct EdgeWeight(u16);
-
-/// Newtype to prevent rogue string use
-#[derive(Debug, Serialize)]
-struct EdgeId(String);
-
-/// Newtype to prevent rogue string use
-#[derive(Debug, Serialize)]
-struct EdgeDescription(String);
-
-/// A factual claim that supports a proposed relationship between a source and target node.
-#[derive(Debug, Serialize)]
-struct FactualClaim {
-    /// The factual claim
-    fact: Fact,
-
-    /// The source text unit
-    // TODO should this be a reference or owned?
-    citation: TextUnit,
-
-    /// The degree of confidence in the claim.
-    status: EpistemicStatus,
-}
-
-/// Represents a single chunk of a source document.
-#[derive(Debug, Serialize)]
-struct Fact(String);
-
-/// Represents the degree of epistemic certainty for a given claim, given the context.
-// TODO remove unused allow rule
-#[derive(Debug, Serialize)]
-enum EpistemicStatus {
-    /// An arbitrary claim has no perceptual or conceptual evidence. It is neither true or false
-    /// because it is outside of cognition. The arbitrary is distinct from the possible because the
-    /// arbitrary has no proposed evidence.
-    ///
-    /// Examples:
-    /// - "There is a teapot orbiting Mars."
-    /// - "You are secretly a parrot."
-    #[allow(unused)]
-    Arbitrary,
-
-    /// A claim for which there is some, but not conclusive evidence. There is nothing in the
-    /// current context of knowledge that contradicts the evidence.
-    #[allow(unused)]
-    Possible,
-
-    /// A claim for which the evidence is strong, but not yet conclusive. The context indicates
-    /// that the weight of the evidence supports the claim, making it more likely to be true than
-    /// false; however, further evidence could still tip the scale.
-    #[allow(unused)]
-    Probable,
-
-    /// A claim for which the evidence is conclusive within a given context of knowledge. All
-    /// available evidence supports the claim, and there is no evidence to support any alternative.
-    #[allow(unused)]
-    Certain,
-}
-
-/// Represents a single chunk of a source document.
-#[derive(Debug, Serialize)]
-struct TextUnit {
-    /// The id of the source document
-    document_id: DocumentId,
-
-    /// The raw chunk text
-    text: AnnotatedText,
-
-    /// The number of tokens in the raw chunk text
-    /// ``token_count`` can be used to control context size in LLM prompts containing the
-    /// ``TextUnit``
-    token_count: TokenCount,
-}
-
-/// ``AnnotatedText`` is text from a Chunk that has its entities marked.
-///
-/// - Raw text -> "I like apples"
-/// - Annotated text -> "<entity type=Person>I</entity> like <entity type=Lifeform>apples</entity>"
-#[derive(Debug, Serialize)]
-struct AnnotatedText(String);
-
-#[derive(Debug, Serialize)]
-struct DocumentId(String);
-
-#[derive(Debug, Serialize)]
-pub struct NonEmptyString(String);
-
-#[derive(Debug, Serialize)]
-struct TokenCount(usize);
-
-/// Represents a unit of source material for the graph produced by this application
-#[allow(unused)]
-struct Document {
-    // TODO define how this is derived
-    id: DocumentId,
-
-    /// The full raw text of the document
-    text: NonEmptyString,
-}
-
-struct KnowledgeGraph {
-    nodes: Vec<GraphNode>,
-    edges: Vec<GraphEdge>,
-}
-
-struct GraphNode {
-    description: NodeDescription,
-    entity_type: EntityType,
-    mentions: Vec<TextUnit>,
-    name: EntityName,
-}
-
-struct GraphEdge {
-    source: NodeId,
-    target: NodeId,
-    edge_type: Todo,
-    description: EdgeDescription,
-    evidence: Vec<FactualClaim>,
-    weight: EdgeWeight,
-}
-
-/// An LLM extracted entity from a source ``TextUnit``
-struct EntityMention {
-    description: NodeDescription,
-    entity_type: EntityType,
-    name: EntityName,
-    /// The source of duplicate ``EntityMentions`` will be folded into the ``GraphNode.mentions``
-    /// field.
-    source: TextUnit,
-}
-
-struct RelationshipMention {
-    source: NodeId,
-    target: NodeId,
-    description: EdgeDescription,
-    evidence: Vec<FactualClaim>,
-    relationship_type: Todo,
 }
 
 // TODO remove public field and create initializer
@@ -480,7 +306,9 @@ where
                                 continue;
                             }
                         };
+
                         let entities: Vec<EntityMention> = extract_entities(&marked);
+
                         let relationships: Vec<RelationshipMention> =
                             match extract_relationships(marked, llm.as_ref()) {
                                 Ok(val) => val,
@@ -500,6 +328,7 @@ where
                 }
             }
         });
+
         handles.push(handle);
     }
 

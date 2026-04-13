@@ -1,0 +1,7 @@
+use super::GraphEdge;
+use super::GraphNode;
+
+pub(crate) struct KnowledgeGraph {
+    pub(crate) nodes: Vec<GraphNode>,
+    pub(crate) edges: Vec<GraphEdge>,
+}

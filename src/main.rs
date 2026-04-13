@@ -1,3 +1,4 @@
+mod domain;
 mod app;
 
 use std::{io::Cursor, process};
