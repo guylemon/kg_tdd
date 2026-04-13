@@ -38,8 +38,27 @@ impl GraphArtifactSink for FileGraphArtifactSink {
 
         let graph_path = output_dir.join("graph.json");
         let graph_json = CytoscapeJsonProjector::project(graph)?;
-        fs::write(&graph_path, graph_json).map_err(|_| AppError::write_output(graph_path))
+        fs::write(&graph_path, graph_json).map_err(|_| AppError::write_output(&graph_path))?;
+
+        copy_viewer_asset(output_dir, "index.html")?;
+        copy_viewer_asset(output_dir, "cytoscape.min.js")?;
+
+        Ok(())
     }
+}
+
+fn copy_viewer_asset(output_dir: &Path, file_name: &str) -> Result<(), AppError> {
+    let source_path = viewer_asset_path(file_name);
+    let target_path = output_dir.join(file_name);
+    fs::copy(&source_path, &target_path).map_err(|_| AppError::write_output(target_path))?;
+    Ok(())
+}
+
+fn viewer_asset_path(file_name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join("viewer")
+        .join(file_name)
 }
 
 fn document_id_from_path(path: &Path) -> String {
@@ -86,7 +105,9 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{FileDocumentSource, FileGraphArtifactSink, document_id_from_path};
+    use super::{
+        FileDocumentSource, FileGraphArtifactSink, document_id_from_path, viewer_asset_path,
+    };
     use crate::domain::KnowledgeGraph;
     use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -121,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_graph_json_to_output_directory() {
+    fn writes_graph_artifact_bundle_to_output_directory() {
         let dir = temp_dir("write_graph");
         let output_dir = dir.join("artifacts");
 
@@ -136,10 +157,23 @@ mod tests {
             .expect("write graph");
 
         let graph_path = output_dir.join("graph.json");
+        let index_path = output_dir.join("index.html");
+        let script_path = output_dir.join("cytoscape.min.js");
         assert!(graph_path.is_file());
+        assert!(index_path.is_file());
+        assert!(script_path.is_file());
         assert_eq!(
             fs::read_to_string(graph_path).expect("graph json"),
             r#"{"nodes":[],"edges":[]}"#
+        );
+        let index_html = fs::read_to_string(index_path).expect("index html");
+        assert!(index_html.contains("./cytoscape.min.js"));
+        assert!(index_html.contains("./graph.json"));
+        assert!(!index_html.contains("http://"));
+        assert!(!index_html.contains("https://"));
+        assert_eq!(
+            fs::read(script_path).expect("script bytes"),
+            fs::read(viewer_asset_path("cytoscape.min.js")).expect("vendored script bytes")
         );
     }
 

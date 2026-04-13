@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge Graph Viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Georgia, "Times New Roman", serif;
+      background: linear-gradient(180deg, #f3efe6 0%, #e3ddd1 100%);
+      color: #1f1d1a;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+    }
+
+    main {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 1.5rem 1.5rem 0.75rem;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.75rem, 2.5vw, 2.5rem);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    p {
+      margin: 0.5rem 0 0;
+      max-width: 48rem;
+      line-height: 1.5;
+    }
+
+    #status {
+      margin: 0 1.5rem 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 0.75rem;
+      background: rgba(255, 255, 255, 0.7);
+    }
+
+    #status[data-state="error"] {
+      background: #f8d7da;
+      color: #58151c;
+    }
+
+    #graph {
+      margin: 0 1.5rem 1.5rem;
+      min-height: 32rem;
+      border: 1px solid rgba(31, 29, 26, 0.15);
+      border-radius: 1rem;
+      background: rgba(255, 252, 247, 0.9);
+      box-shadow: 0 16px 40px rgba(54, 44, 24, 0.08);
+    }
+
+    footer {
+      padding: 0 1.5rem 1.5rem;
+      font-size: 0.95rem;
+      color: rgba(31, 29, 26, 0.72);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Knowledge Graph</h1>
+      <p>This static viewer loads the local <code>graph.json</code> artifact and renders it with the bundled Cytoscape runtime.</p>
+    </header>
+    <div id="status" data-state="loading">Loading graph data...</div>
+    <div id="graph" aria-label="Knowledge graph visualization"></div>
+    <footer>Local-only bundle: <code>index.html</code>, <code>graph.json</code>, <code>cytoscape.min.js</code>.</footer>
+  </main>
+  <script src="./cytoscape.min.js"></script>
+  <script>
+    const statusEl = document.getElementById("status");
+    const graphEl = document.getElementById("graph");
+
+    function setStatus(message, state) {
+      statusEl.textContent = message;
+      statusEl.dataset.state = state;
+    }
+
+    function renderGraph(graph) {
+      const elements = [
+        ...graph.nodes,
+        ...graph.edges,
+      ];
+
+      cytoscape({
+        container: graphEl,
+        elements,
+        layout: { name: "cose", animate: false },
+        style: [
+          {
+            selector: "node",
+            style: {
+              label: "data(name)",
+              "background-color": "#375a7f",
+              color: "#1f1d1a",
+              "text-wrap": "wrap",
+              "text-max-width": "120px",
+              "font-size": "12px",
+              "text-valign": "bottom",
+              "text-margin-y": 10,
+              width: "label",
+              height: "label",
+              padding: "14px",
+              shape: "round-rectangle"
+            }
+          },
+          {
+            selector: "edge",
+            style: {
+              label: "data(edge_type)",
+              width: "mapData(weight, 1, 10, 2, 8)",
+              "line-color": "#8c6d46",
+              "target-arrow-color": "#8c6d46",
+              "target-arrow-shape": "triangle",
+              "curve-style": "bezier",
+              "font-size": "11px",
+              "text-background-color": "#fffaf2",
+              "text-background-opacity": 1,
+              "text-background-padding": "2px"
+            }
+          }
+        ]
+      });
+    }
+
+    async function main() {
+      try {
+        const response = await fetch("./graph.json");
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const graph = await response.json();
+        if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+          throw new Error("graph.json is not a Cytoscape elements object");
+        }
+
+        renderGraph(graph);
+        setStatus(`Loaded ${graph.nodes.length} nodes and ${graph.edges.length} edges.`, "ready");
+      } catch (error) {
+        console.error(error);
+        setStatus(`Failed to load graph.json: ${error.message}`, "error");
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>
