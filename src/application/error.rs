@@ -2,7 +2,9 @@ use crate::domain::Todo;
 
 #[derive(Debug)]
 pub(crate) enum AppError {
+    PartitionDocument,
     ReadInput,
+    LoadTokenizer,
     ExtractChunk,
     ProjectGraph,
     WriteOutput,
