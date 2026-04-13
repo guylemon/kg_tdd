@@ -37,17 +37,20 @@ impl TokenizerSource for HubTokenizerSource {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct StaticTokenizerSource {
     tokenizer: Tokenizer,
 }
 
+#[cfg(test)]
 impl StaticTokenizerSource {
     pub(crate) fn new(tokenizer: Tokenizer) -> Self {
         Self { tokenizer }
     }
 }
 
+#[cfg(test)]
 impl TokenizerSource for StaticTokenizerSource {
     fn load(&self, _tokenizer_name: &str) -> Result<Tokenizer, AppError> {
         Ok(self.tokenizer.clone())
