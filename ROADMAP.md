@@ -22,7 +22,7 @@ The main recommendation is to sequence reliability and evaluation before broad f
 
 ## Milestone 1: CLI Product Completion
 
-- Turn the current prototype into a real CLI with explicit arguments for input path, output directory, tokenizer settings, and provider selection mode.
+- Turn the current prototype into a real CLI with explicit arguments for input path, output directory, tokenizer settings. (Provider selection support added in Milestone 2)
 - Replace the current `stdin -> stdout` only flow with artifact generation:
   - `graph.json`
   - `index.html`
