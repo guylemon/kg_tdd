@@ -75,18 +75,18 @@ impl SchemaLlmClient for FakeSchemaLlmClient {
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        let payload = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<AiExtractionResponse>()
-        {
-            fixture_entities(&user_prompt.0)
-        } else if std::any::TypeId::of::<T>()
-            == std::any::TypeId::of::<AiRelationshipExtractionResponse>()
-        {
-            fixture_relationships(&user_prompt.0)
-        } else {
-            return Err(AppError::provider_response(
-                "unsupported fixture schema requested",
-            ));
-        };
+        let payload =
+            if std::any::TypeId::of::<T>() == std::any::TypeId::of::<AiExtractionResponse>() {
+                fixture_entities(&user_prompt.0)
+            } else if std::any::TypeId::of::<T>()
+                == std::any::TypeId::of::<AiRelationshipExtractionResponse>()
+            {
+                fixture_relationships(&user_prompt.0)
+            } else {
+                return Err(AppError::provider_response(
+                    "unsupported fixture schema requested",
+                ));
+            };
 
         serde_json::from_value(payload)
             .map_err(|_| AppError::provider_response("fixture response does not match schema"))
@@ -409,8 +409,8 @@ where
 {
     let sys_prompt = NonEmptyString(String::from("Extract entity relationships from the text."));
     let user_prompt = NonEmptyString(text_unit.text.0.clone());
-    let response =
-        llm_client.generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
+    let response = llm_client
+        .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
 
     Ok(response
         .relationships
@@ -636,10 +636,9 @@ fn validate_base_url(base_url: &str) -> Result<(), AppError> {
 
 fn classify_transport_error(error: ureq::Error, endpoint: &str) -> AppError {
     match error {
-        ureq::Error::Timeout(timeout) => AppError::provider_timeout(format!(
-            "{} while calling {}",
-            timeout, endpoint
-        )),
+        ureq::Error::Timeout(timeout) => {
+            AppError::provider_timeout(format!("{} while calling {}", timeout, endpoint))
+        }
         ureq::Error::StatusCode(code) => classify_status_code(code, endpoint),
         other => AppError::provider_transport(format!("{other} while calling {endpoint}")),
     }
@@ -657,7 +656,10 @@ fn classify_status_code(code: u16, endpoint: &str) -> AppError {
 }
 
 fn is_retryable(error: &AppError) -> bool {
-    matches!(error, AppError::ProviderTransport(_) | AppError::ProviderTimeout(_))
+    matches!(
+        error,
+        AppError::ProviderTransport(_) | AppError::ProviderTimeout(_)
+    )
 }
 
 fn retry_operation<T, F>(max_retries: usize, mut operation: F) -> Result<T, AppError>
@@ -679,9 +681,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfiguredSchemaLlmClient, FakeSchemaLlmClient, ParallelChunkExtractor,
-        build_chat_request, classify_status_code, extract_chunk, retry_operation,
-        validate_base_url,
+        ConfiguredSchemaLlmClient, FakeSchemaLlmClient, ParallelChunkExtractor, build_chat_request,
+        classify_status_code, extract_chunk, retry_operation, validate_base_url,
     };
     use crate::adapters::StaticTokenizerSource;
     use crate::application::{
@@ -851,7 +852,10 @@ mod tests {
         let result = retry_operation::<(), _>(2, || {
             attempts += 1;
             if attempts == 1 {
-                Err(classify_status_code(500, "http://localhost:8080/v1/chat/completions"))
+                Err(classify_status_code(
+                    500,
+                    "http://localhost:8080/v1/chat/completions",
+                ))
             } else {
                 Ok(())
             }
@@ -900,5 +904,4 @@ mod tests {
         tokenizer.with_pre_tokenizer(Some(Whitespace));
         tokenizer
     }
-
 }

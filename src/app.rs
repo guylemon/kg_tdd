@@ -65,9 +65,7 @@ mod tests {
 
     use super::App;
     use crate::adapters::{FakeSchemaLlmClient, FileGraphArtifactSink, StaticTokenizerSource};
-    use crate::application::{
-        AppError, IngestConfig, MaxConcurrency, ProviderConfig, RunConfig,
-    };
+    use crate::application::{AppError, IngestConfig, MaxConcurrency, ProviderConfig, RunConfig};
     use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
     use crate::ports::{DocumentSource, GraphArtifactSink};
 

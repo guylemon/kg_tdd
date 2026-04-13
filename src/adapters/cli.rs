@@ -44,11 +44,7 @@ impl CliArgs {
                     set_parsed_flag("--provider-mode", &mut provider_mode, mode)?;
                 }
                 "--provider-base-url" => {
-                    set_string_flag(
-                        "--provider-base-url",
-                        &mut provider_base_url,
-                        args.next(),
-                    )?;
+                    set_string_flag("--provider-base-url", &mut provider_base_url, args.next())?;
                 }
                 "--provider-model" => {
                     set_string_flag("--provider-model", &mut provider_model, args.next())?;
