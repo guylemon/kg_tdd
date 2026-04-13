@@ -1,12 +1,14 @@
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 use std::sync::{mpsc, Arc, Mutex};
 
 use crate::application::{AppError, Chunk, ExtractionOutcome, MaxConcurrency};
 use crate::domain::{
-    AnnotatedText, EdgeDescription, EntityMention, NonEmptyString, RelationshipMention, TextUnit,
-    Todo,
+    AnnotatedText, EdgeDescription, EntityMention, EntityName, EntityType, EpistemicStatus, Fact,
+    FactualClaim, NodeDescription, NodeId, NonEmptyString, RelationshipMention,
+    RelationshipType, TextUnit, Todo, TokenCount,
 };
 use crate::ports::{ChunkExtractor, DocumentPartitioner};
 
@@ -17,7 +19,7 @@ pub(crate) trait SchemaLlmClient: Send + Sync {
         user_prompt: NonEmptyString,
     ) -> Result<T, Todo>
     where
-        T: DeserializeOwned + JsonSchema;
+        T: DeserializeOwned + JsonSchema + 'static;
 }
 
 impl SchemaLlmClient for Todo {
@@ -27,11 +29,34 @@ impl SchemaLlmClient for Todo {
         _user_prompt: NonEmptyString,
     ) -> Result<T, Todo>
     where
-        T: DeserializeOwned + JsonSchema,
+        T: DeserializeOwned + JsonSchema + 'static,
     {
         let schema = schemars::schema_for!(T);
         let schema_json = serde_json::to_string_pretty(&schema).map_err(|_| Todo)?;
         serde_json::from_str(&schema_json).map_err(|_| Todo)
+    }
+}
+
+pub(crate) struct FakeSchemaLlmClient;
+
+impl SchemaLlmClient for FakeSchemaLlmClient {
+    fn generate_with_schema<T>(
+        &self,
+        _sys_prompt: NonEmptyString,
+        user_prompt: NonEmptyString,
+    ) -> Result<T, Todo>
+    where
+        T: DeserializeOwned + JsonSchema + 'static,
+    {
+        let payload = if TypeId::of::<T>() == TypeId::of::<AiExtractionResponse>() {
+            fixture_entities(&user_prompt.0)
+        } else if TypeId::of::<T>() == TypeId::of::<AiRelationshipExtractionResponse>() {
+            fixture_relationships(&user_prompt.0)
+        } else {
+            return Err(Todo);
+        };
+
+        serde_json::from_value(payload).map_err(|_| Todo)
     }
 }
 
@@ -56,8 +81,12 @@ impl<C> DocumentPartitioner for ParallelChunkExtractor<C>
 where
     C: SchemaLlmClient + 'static,
 {
-    fn partition(&self, _document: &crate::domain::Document) -> Result<Vec<Chunk>, AppError> {
-        Ok(Vec::new())
+    fn partition(&self, document: &crate::domain::Document) -> Result<Vec<Chunk>, AppError> {
+        Ok(vec![Chunk {
+            document_id: document.id.clone(),
+            text: document.text.clone(),
+            token_count: TokenCount::from_text(&document.text),
+        }])
     }
 }
 
@@ -78,23 +107,30 @@ struct ExtractionTask {
     chunk: Chunk,
 }
 
-#[derive(Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
 struct RelationshipExtract {
-    relation: Todo,
-    source: String,
-    target: String,
-    relationship_type: Todo,
+    source: ExtractedEntity,
+    target: ExtractedEntity,
+    relationship_type: RelationshipType,
     description: String,
+    fact: String,
 }
 
-#[derive(Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
 struct AiRelationshipExtractionResponse {
     relationships: Vec<RelationshipExtract>,
 }
 
-#[derive(Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
+struct ExtractedEntity {
+    name: String,
+    entity_type: EntityType,
+    description: String,
+}
+
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
 struct AiExtractionResponse {
-    entities: Vec<String>,
+    entities: Vec<ExtractedEntity>,
 }
 
 fn map_reduce_extract<C>(
@@ -162,9 +198,10 @@ fn extract_chunk<C>(chunk: Chunk, llm_client: &C) -> Result<ExtractionOutcome, A
 where
     C: SchemaLlmClient + 'static,
 {
-    let marked = mark_entities(chunk, llm_client)?;
-    let entities = extract_entities(&marked);
-    let relationships = extract_relationships(marked, llm_client)?;
+    let entity_response = request_entity_extraction(&chunk.text, llm_client)?;
+    let marked = mark_entities(chunk, &entity_response);
+    let entities = extract_entities(&marked, entity_response);
+    let relationships = extract_relationships(&marked, llm_client)?;
 
     Ok(ExtractionOutcome {
         entities,
@@ -173,69 +210,219 @@ where
 }
 
 fn extract_relationships<C>(
-    _text_unit: TextUnit,
+    text_unit: &TextUnit,
     llm_client: &C,
 ) -> Result<Vec<RelationshipMention>, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
-    let relationship_types: Vec<Todo> = Vec::new();
-    let mut extracted_relationships: Vec<RelationshipExtract> = Vec::new();
+    let sys_prompt = NonEmptyString(String::from("Extract entity relationships from the text."));
+    let user_prompt = NonEmptyString(text_unit.text.0.clone());
+    let response = llm_client
+        .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)
+        .map_err(|_| AppError::ExtractChunk)?;
 
-    for _relationship_type in &relationship_types {
-        let sys_prompt = NonEmptyString(String::new());
-        let user_prompt = NonEmptyString(String::new());
-        let response = llm_client
-            .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)
-            .map_err(|_| AppError::ExtractChunk)?;
-
-        extracted_relationships.extend(response.relationships);
-    }
-
-    Ok(extracted_relationships
+    Ok(response
+        .relationships
         .into_iter()
         .map(|relationship| RelationshipMention {
-            source: crate::domain::NodeId(relationship.source),
-            target: crate::domain::NodeId(relationship.target),
+            source: entity_name_to_node_id(&relationship.source.name),
+            target: entity_name_to_node_id(&relationship.target.name),
             description: EdgeDescription(relationship.description),
-            evidence: Vec::new(),
+            evidence: vec![FactualClaim {
+                fact: Fact(relationship.fact),
+                citation: text_unit.clone(),
+                status: EpistemicStatus::Probable,
+            }],
             relationship_type: relationship.relationship_type,
         })
         .collect())
 }
 
-fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
-    Vec::new()
+fn extract_entities(text_unit: &TextUnit, response: AiExtractionResponse) -> Vec<EntityMention> {
+    response
+        .entities
+        .into_iter()
+        .map(|entity| EntityMention {
+            description: NodeDescription(entity.description),
+            entity_type: entity.entity_type,
+            name: EntityName(entity.name),
+            source: text_unit.clone(),
+        })
+        .collect()
 }
 
-fn mark_entities<C>(chunk: Chunk, llm_client: &C) -> Result<TextUnit, AppError>
+fn mark_entities(chunk: Chunk, response: &AiExtractionResponse) -> TextUnit {
+    let Chunk {
+        document_id,
+        text,
+        token_count,
+    } = chunk;
+    let text = annotate_text(text.0, response);
+
+    TextUnit {
+        document_id,
+        text: AnnotatedText(text),
+        token_count,
+    }
+}
+
+fn annotate_text(text: String, response: &AiExtractionResponse) -> String {
+    let mut result = text;
+    let mut entities = response.entities.clone();
+    entities.sort_by(|left, right| right.name.len().cmp(&left.name.len()));
+
+    for entity in entities {
+        let annotation = format!("<entity type=\"{:?}\">{}</entity>", entity.entity_type, entity.name);
+        result = result.replace(&entity.name, &annotation);
+    }
+    result
+}
+
+fn entity_name_to_node_id(name: &str) -> NodeId {
+    NodeId(format!("node:{}", slugify(name)))
+}
+
+fn slugify(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|char| if char.is_ascii_alphanumeric() { char } else { '-' })
+        .collect()
+}
+
+fn fixture_entities(user_prompt: &str) -> serde_json::Value {
+    if user_prompt.contains("An apple is a red fruit that grows on trees") {
+        serde_json::json!({
+            "entities": [
+                {
+                    "name": "apple",
+                    "entity_type": "Lifeform",
+                    "description": "A red fruit"
+                },
+                {
+                    "name": "fruit",
+                    "entity_type": "Concept",
+                    "description": "An edible plant structure"
+                },
+                {
+                    "name": "trees",
+                    "entity_type": "Lifeform",
+                    "description": "Woody plants"
+                }
+            ]
+        })
+    } else {
+        serde_json::json!({ "entities": [] })
+    }
+}
+
+fn fixture_relationships(user_prompt: &str) -> serde_json::Value {
+    if user_prompt.contains("apple")
+        && user_prompt.contains("fruit")
+        && user_prompt.contains("trees")
+    {
+        serde_json::json!({
+            "relationships": [
+                {
+                    "source": {
+                        "name": "apple",
+                        "entity_type": "Lifeform",
+                        "description": "A red fruit"
+                    },
+                    "target": {
+                        "name": "fruit",
+                        "entity_type": "Concept",
+                        "description": "An edible plant structure"
+                    },
+                    "relationship_type": "IsA",
+                    "description": "apple is a fruit",
+                    "fact": "An apple is a red fruit"
+                },
+                {
+                    "source": {
+                        "name": "apple",
+                        "entity_type": "Lifeform",
+                        "description": "A red fruit"
+                    },
+                    "target": {
+                        "name": "trees",
+                        "entity_type": "Lifeform",
+                        "description": "Woody plants"
+                    },
+                    "relationship_type": "GrowsOn",
+                    "description": "apple grows on trees",
+                    "fact": "apple grows on trees"
+                }
+            ]
+        })
+    } else {
+        serde_json::json!({ "relationships": [] })
+    }
+}
+
+fn request_entity_extraction<C>(
+    text: &NonEmptyString,
+    llm_client: &C,
+) -> Result<AiExtractionResponse, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
-    let mut text = chunk.text.0;
-    let supported_types: Vec<Todo> = Vec::new();
-
-    for _entity_type in &supported_types {
-        let sys_prompt = NonEmptyString(String::new());
-        let user_prompt = NonEmptyString(String::new());
-        let response = llm_client
-            .generate_with_schema::<AiExtractionResponse>(sys_prompt, user_prompt)
-            .map_err(|_| AppError::ExtractChunk)?;
-
-        text = annotate_text(text, response);
-    }
-
-    Ok(TextUnit {
-        document_id: chunk.document_id,
-        text: AnnotatedText(text),
-        token_count: chunk.token_count,
-    })
+    let sys_prompt = NonEmptyString(String::from("Mark entities in the text."));
+    let user_prompt = text.clone();
+    llm_client
+        .generate_with_schema::<AiExtractionResponse>(sys_prompt, user_prompt)
+        .map_err(|_| AppError::ExtractChunk)
 }
 
-fn annotate_text(text: String, response: AiExtractionResponse) -> String {
-    let mut result = text;
-    for entity in response.entities {
-        result = entity;
+trait TokenCountFromText {
+    fn from_text(value: &NonEmptyString) -> Self;
+}
+
+impl TokenCountFromText for crate::domain::TokenCount {
+    fn from_text(value: &NonEmptyString) -> Self {
+        let count = value.0.split_whitespace().count();
+        TokenCount(count)
     }
-    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_chunk, FakeSchemaLlmClient, ParallelChunkExtractor};
+    use crate::application::{Chunk, MaxConcurrency};
+    use crate::domain::{Document, DocumentId, NonEmptyString};
+    use crate::ports::DocumentPartitioner;
+
+    #[test]
+    fn partitions_document_into_single_chunk() {
+        let extractor = ParallelChunkExtractor::new(MaxConcurrency(1), FakeSchemaLlmClient);
+        let document = Document {
+            id: DocumentId(String::from("stdin-document")),
+            text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+        };
+
+        let chunks = extractor.partition(&document).expect("chunks");
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].document_id.0, "stdin-document");
+        assert_eq!(chunks[0].token_count.0, 10);
+    }
+
+    #[test]
+    fn fake_client_extracts_fixture_entities_and_relationships() {
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: crate::domain::TokenCount(10),
+            },
+            &FakeSchemaLlmClient,
+        )
+        .expect("outcome");
+
+        assert_eq!(outcome.entities.len(), 3);
+        assert_eq!(outcome.relationships.len(), 2);
+        assert_eq!(outcome.relationships[0].source.0, "node:apple");
+        assert_eq!(outcome.relationships[1].target.0, "node:trees");
+    }
 }

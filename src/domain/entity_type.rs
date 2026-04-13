@@ -1,8 +1,9 @@
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// The supported Entity types for this application
 // TODO remove unused allow rule
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) enum EntityType {
     /// Theoretical ideas, methodologies, approaches
     #[allow(unused)]

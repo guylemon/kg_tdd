@@ -4,4 +4,4 @@ mod llm;
 
 pub(crate) use cytoscape::CytoscapeJsonProjector;
 pub(crate) use io::{ReadDocumentSource, WriteGraphSink};
-pub(crate) use llm::{ParallelChunkExtractor, SchemaLlmClient};
+pub(crate) use llm::{FakeSchemaLlmClient, ParallelChunkExtractor, SchemaLlmClient};

@@ -59,7 +59,8 @@ mod tests {
     use super::{consolidate_entities, consolidate_relationships};
     use crate::domain::{
         AnnotatedText, DocumentId, EdgeDescription, EntityMention, EntityName, EntityType, Fact,
-        FactualClaim, NodeDescription, NodeId, RelationshipMention, TextUnit, Todo, TokenCount,
+        FactualClaim, NodeDescription, NodeId, RelationshipMention, RelationshipType, TextUnit,
+        TokenCount,
     };
 
     #[test]
@@ -94,14 +95,14 @@ mod tests {
                 citation: sample_text_unit(),
                 status: crate::domain::EpistemicStatus::Probable,
             }],
-            relationship_type: Todo,
+            relationship_type: RelationshipType::IsA,
         };
         let relationship_b = RelationshipMention {
             source: NodeId(String::from("alice")),
             target: NodeId(String::from("bob")),
             description: EdgeDescription(String::from("knows")),
             evidence: Vec::new(),
-            relationship_type: Todo,
+            relationship_type: RelationshipType::IsA,
         };
 
         let edges = consolidate_relationships(vec![relationship_a, relationship_b]);

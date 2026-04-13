@@ -1,11 +1,9 @@
 use crate::application::AppError;
 use crate::domain::{
     EdgeDescription, EdgeId, EdgeWeight, EntityName, EntityType, FactualClaim, GraphEdge,
-    GraphNode, KnowledgeGraph, NodeDescription, NodeId, TextUnit, Todo,
+    GraphNode, KnowledgeGraph, NodeDescription, NodeId, RelationshipType, TextUnit,
 };
 use serde::Serialize;
-
-const TODO_STRING: &str = "";
 
 /// A serializable type used as input to the cytoscape JavaScript UI library.
 /// See more: <https://js.cytoscape.org/#notation/elements-json>
@@ -37,7 +35,7 @@ struct CyNodeData {
 impl From<GraphNode> for CyNodeData {
     fn from(node: GraphNode) -> Self {
         Self {
-            id: NodeId(TODO_STRING.to_owned()),
+            id: make_node_id(&node.name),
             name: node.name,
             entity_type: node.entity_type,
             description: node.description,
@@ -51,7 +49,7 @@ struct CyEdgeData {
     id: EdgeId,
     source: NodeId,
     target: NodeId,
-    edge_type: Todo,
+    edge_type: RelationshipType,
     description: EdgeDescription,
     evidence: Vec<FactualClaim>,
     weight: EdgeWeight,
@@ -59,8 +57,9 @@ struct CyEdgeData {
 
 impl From<GraphEdge> for CyEdgeData {
     fn from(edge: GraphEdge) -> Self {
+        let id = make_edge_id(&edge.source, &edge.target);
         Self {
-            id: EdgeId(TODO_STRING.to_owned()),
+            id,
             source: edge.source,
             target: edge.target,
             edge_type: edge.edge_type,
@@ -96,4 +95,20 @@ fn convert_kg_to_cytoscape_elements(kg: &KnowledgeGraph) -> CytoscapeElements {
         .collect();
 
     CytoscapeElements { nodes, edges }
+}
+
+fn make_node_id(name: &EntityName) -> NodeId {
+    NodeId(format!("node:{}", slugify(&name.0)))
+}
+
+fn make_edge_id(source: &NodeId, target: &NodeId) -> EdgeId {
+    EdgeId(format!("edge:{}->{}", source.0, target.0))
+}
+
+fn slugify(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|char| if char.is_ascii_alphanumeric() { char } else { '-' })
+        .collect()
 }
