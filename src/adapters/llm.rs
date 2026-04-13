@@ -78,7 +78,7 @@ where
         config: IngestConfig,
         max_concurrency: MaxConcurrency,
         llm_client: C,
-        tokenizer_source: T,
+        tokenizer_source: &T,
     ) -> Result<Self, AppError>
     where
         T: TokenizerSource,
@@ -442,7 +442,7 @@ mod tests {
             },
             MaxConcurrency(1),
             FakeSchemaLlmClient,
-            StaticTokenizerSource::new(build_test_tokenizer()),
+            &StaticTokenizerSource::new(build_test_tokenizer()),
         )
         .expect("extractor");
         let document = Document {
@@ -484,7 +484,7 @@ mod tests {
             },
             MaxConcurrency(1),
             FakeSchemaLlmClient,
-            StaticTokenizerSource::new(build_test_tokenizer()),
+            &StaticTokenizerSource::new(build_test_tokenizer()),
         )
         .expect("extractor");
         let document = Document {
@@ -528,7 +528,7 @@ mod tests {
             },
             MaxConcurrency(1),
             FakeSchemaLlmClient,
-            BrokenTokenizerSource,
+            &BrokenTokenizerSource,
         );
 
         assert!(matches!(

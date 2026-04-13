@@ -47,7 +47,7 @@ where
             self.config,
             self.max_concurrency,
             self.llm_client,
-            self.tokenizer_source,
+            &self.tokenizer_source,
         )?;
         let service = IngestDocumentService::new(extractor);
 
