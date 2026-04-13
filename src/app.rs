@@ -467,9 +467,7 @@ where
 
                 match task {
                     Ok(task) => {
-                        // TODO move max_passes to config
-                        let max_llm_passes = Some(1);
-                        let marked = match mark_entities(task.chunk, llm.as_ref(), max_llm_passes) {
+                        let marked = match mark_entities(task.chunk, llm.as_ref()) {
                             Ok(val) => val,
                             Err(e) => {
                                 let _ = result_transmitter.send(Err(e));
@@ -520,7 +518,7 @@ where
 
 fn extract_relationships(_text_unit: TextUnit) -> Vec<RelationshipMention> {
     // TODO LLM process needed here
-    // Identify candidate pairs
+    // Identify candidate pairs based upon rules
     // for max tries
     // Verify whether there are more pairs (Y/N)
     // if Y identify more pairs
@@ -545,34 +543,50 @@ fn extract_entities(_text_unit: &TextUnit) -> Vec<EntityMention> {
     vec![]
 }
 
-fn mark_entities<C>(
-    chunk: Chunk,
-    llm_client: &C,
-    max_llm_passes: Option<u8>,
-) -> Result<TextUnit, Todo>
+/// Schema for entity extraction responses
+#[derive(Deserialize, JsonSchema, Serialize)]
+struct AiExtractionResponse {
+    entities: Vec<String>,
+}
+
+/// Attempt at multi-turn NER, similar to <https://arxiv.org/html/2406.04528v1#abstract>
+fn mark_entities<C>(chunk: Chunk, llm_client: &C) -> Result<TextUnit, Todo>
 where
     C: GenerateWithSchema<Error = Todo> + 'static,
 {
-    // - Entity marking
-    let sys_prompt = NonEmptyString(TODO_STRING.into());
-    let user_prompt = NonEmptyString(TODO_STRING.into());
-    let marked_entities = llm_client.generate_with_schema::<Todo>(sys_prompt, user_prompt)?;
+    let mut text = chunk.text.0;
+    let tmp: Vec<String> = Vec::new();
 
-    // for max tries
-    // Verify whether there are more entities (Y/N)
-    // if Y Mark more entities
-    // else break
-    // Classify the entities
-    // for max tries, entities
-    // Verify whether classification is correct (Y/N)
-    // if N re-classify the entity
-    // else break
-    let text = AnnotatedText(chunk.text.0);
+    // Accumulate entity markings for entities, e.g., <entity type={entity_type}>asdf</entity>
+    // For entity_type in supported_entities
+    // TODO implement metadata for entity enums
+    for _entity_type in &tmp {
+        // extract {entity_type} from {raw_chunk} to JSON response;
+        //  {"entities": ["entity_a", "entity_b"] }
+        //  OR { "entities": [] } if no entities of type in text
+        let sys_prompt = NonEmptyString(TODO_STRING.into());
+        let user_prompt = NonEmptyString(TODO_STRING.into());
+        let response =
+            llm_client.generate_with_schema::<AiExtractionResponse>(sys_prompt, user_prompt)?;
+
+        text = annotate_text(text, response);
+    }
+
     Ok(TextUnit {
         document_id: chunk.document_id,
-        text,
+        text: AnnotatedText(text),
         token_count: chunk.token_count,
     })
+}
+
+fn annotate_text(text: String, response: AiExtractionResponse) -> String {
+    // TODO impl
+    let mut result = text;
+    for e in response.entities {
+        result = e;
+    }
+
+    result
 }
 
 /// Deduplicate and resolve entities and relationships
