@@ -158,8 +158,9 @@ impl OpenAiCompatibleSchemaLlmClient {
     {
         let endpoint = format!("{}/v1/chat/completions", self.base_url);
         let body = build_chat_request::<T>(&self.model, sys_prompt, user_prompt)?;
-        let request_json = serde_json::to_string(&body)
-            .map_err(|_| AppError::provider_response("failed to serialize provider request body"))?;
+        let request_json = serde_json::to_string(&body).map_err(|_| {
+            AppError::provider_response("failed to serialize provider request body")
+        })?;
         let schema_name = std::any::type_name::<T>();
 
         log_provider_request(
@@ -180,9 +181,7 @@ impl OpenAiCompatibleSchemaLlmClient {
 
         let mut response = match request.send_json(&body) {
             Ok(response) => {
-                debug!(
-                    "provider request succeeded: schema={schema_name}, endpoint={endpoint}"
-                );
+                debug!("provider request succeeded: schema={schema_name}, endpoint={endpoint}");
                 response
             }
             Err(ureq::Error::StatusCode(code)) => {
@@ -205,8 +204,8 @@ impl OpenAiCompatibleSchemaLlmClient {
             .map_err(|_| AppError::provider_response("response body is not valid UTF-8 text"))?;
         log_provider_response(schema_name, endpoint.as_str(), &response_text);
 
-        let response_body: ChatCompletionResponse = serde_json::from_str(&response_text)
-            .map_err(|_| {
+        let response_body: ChatCompletionResponse =
+            serde_json::from_str(&response_text).map_err(|_| {
                 debug!(
                     "provider response JSON parse failed: schema={}, endpoint={}, snippet={}",
                     schema_name,
@@ -505,8 +504,7 @@ where
 {
     debug!(
         "extracting chunk for document={} with token_count={}",
-        chunk.document_id.0,
-        chunk.token_count.0
+        chunk.document_id.0, chunk.token_count.0
     );
     let entity_response = request_entity_extraction(&chunk.text, llm_client)?;
     let marked = mark_entities(chunk, &entity_response);
@@ -898,7 +896,9 @@ fn log_provider_request(
 
 fn log_provider_response(schema_name: &str, endpoint: &str, response_text: &str) {
     if raw_provider_debug_enabled() {
-        debug!("raw provider response for schema={schema_name}, endpoint={endpoint}: {response_text}");
+        debug!(
+            "raw provider response for schema={schema_name}, endpoint={endpoint}: {response_text}"
+        );
         return;
     }
 

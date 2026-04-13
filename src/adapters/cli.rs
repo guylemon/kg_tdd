@@ -39,10 +39,8 @@ impl CliArgs {
                     set_usize_flag("--max-chunk-tokens", &mut max_chunk_tokens, args.next())?;
                 }
                 "--provider-mode" => {
-                    let mode =
-                        next_string_value("--provider-mode", args.next()).and_then(|raw| {
-                            parse_mode(&raw)
-                        })?;
+                    let mode = next_string_value("--provider-mode", args.next())
+                        .and_then(|raw| parse_mode(&raw))?;
                     set_parsed_flag("--provider-mode", &mut provider_mode, mode)?;
                 }
                 "--provider-base-url" => {
