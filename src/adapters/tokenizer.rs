@@ -18,7 +18,7 @@ impl TokenizerSource for HubTokenizerSource {
 
         if let Some(tokenizer) = cache
             .lock()
-            .map_err(|_| AppError::LoadTokenizer)?
+            .map_err(|_| AppError::load_tokenizer(tokenizer_name))?
             .get(tokenizer_name)
             .cloned()
         {
@@ -26,11 +26,11 @@ impl TokenizerSource for HubTokenizerSource {
         }
 
         let tokenizer = Tokenizer::from_pretrained(tokenizer_name, None)
-            .map_err(|_| AppError::LoadTokenizer)?;
+            .map_err(|_| AppError::load_tokenizer(tokenizer_name))?;
 
         cache
             .lock()
-            .map_err(|_| AppError::LoadTokenizer)?
+            .map_err(|_| AppError::load_tokenizer(tokenizer_name))?
             .insert(tokenizer_name.to_owned(), tokenizer.clone());
 
         Ok(tokenizer)

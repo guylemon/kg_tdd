@@ -1,1 +1,1 @@
-echo "An apple is a red fruit that grows on trees." | cargo run
+cargo run -- --input fixtures/seed.txt --output-dir out

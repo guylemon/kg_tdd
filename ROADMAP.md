@@ -22,17 +22,37 @@ The main recommendation is to sequence reliability and evaluation before broad f
 
 ## Milestone 1: CLI Product Completion
 
-- Turn the current prototype into a real CLI with explicit arguments for input path, output directory, tokenizer settings, and provider selection mode.
-- Replace the current `stdin -> stdout` only flow with artifact generation:
-  - `graph.json`
+Completed in this milestone so far:
+
+- Replaced the prototype `stdin -> stdout` flow with a real single-document CLI.
+- Added explicit CLI flags for:
+  - input document path
+  - output directory
+  - tokenizer name
+  - max chunk tokens
+- Switched the application to file-based input and artifact-oriented output.
+- Added `graph.json` generation into the requested output directory.
+- Added clearer user-facing failures and exit codes for:
+  - CLI usage errors
+  - invalid input path
+  - input read failure / empty input
+  - tokenizer load failure
+  - extraction failure
+  - output directory / write failure
+- Replaced the placeholder `stdin-document` identity with a path-derived document ID.
+- Updated the developer convenience script to invoke the CLI through the new file-based interface.
+
+Still required to complete this milestone:
+
+- Add the static artifact bundle alongside `graph.json`:
   - `index.html`
   - local `cytoscape.min.js`
-- Keep the HTML page build-free and static. The page should load local JS and local JSON only.
-- Add clear failure messages and exit codes for invalid input, tokenizer load failure, extraction failure, and output write failure.
-- Keep single-document workflow as the primary path.
+- Keep the viewer build-free and static. The page should load local JS and local JSON only.
+- Define the generated output directory layout as a stable artifact contract.
+- Add end-to-end tests that validate the full artifact bundle, not just `graph.json`.
 
 Why this matters:
-The project currently has no finished user-facing product surface. Even with providers and better graph semantics, there is still no complete CLI artifact workflow.
+The repo now has a usable CLI and file-output path, but Milestone 1 is only complete once the generated directory is directly inspectable as a static graph viewer rather than only a JSON artifact.
 
 ## Milestone 2: Provider Integration Layer
 

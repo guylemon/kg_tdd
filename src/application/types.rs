@@ -1,13 +1,23 @@
+use std::path::PathBuf;
+
 use crate::domain::{DocumentId, EntityMention, NonEmptyString, RelationshipMention, TokenCount};
 
 // TODO remove public field and create initializer
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct MaxConcurrency(pub u8);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct IngestConfig {
     pub(crate) tokenizer_name: String,
     pub(crate) max_chunk_tokens: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RunConfig {
+    pub(crate) ingest: IngestConfig,
+    pub(crate) input_path: PathBuf,
+    pub(crate) output_dir: PathBuf,
+    pub(crate) max_concurrency: MaxConcurrency,
 }
 
 impl Default for IngestConfig {
