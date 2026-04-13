@@ -42,7 +42,9 @@ where
         )?;
         let service = IngestDocumentService::new(extractor);
 
-        let document = self.document_source.read_document(&self.config.input_path)?;
+        let document = self
+            .document_source
+            .read_document(&self.config.input_path)?;
         let knowledge_graph = service.execute(&document)?;
         self.graph_sink
             .write_graph(&self.config.output_dir, &knowledge_graph)?;

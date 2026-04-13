@@ -55,7 +55,8 @@ impl CliArgs {
         Ok(Self {
             run_config: RunConfig {
                 ingest: IngestConfig {
-                    tokenizer_name: tokenizer_name.unwrap_or_else(|| String::from("bert-base-cased")),
+                    tokenizer_name: tokenizer_name
+                        .unwrap_or_else(|| String::from("bert-base-cased")),
                     max_chunk_tokens: max_chunk_tokens.unwrap_or(128),
                 },
                 input_path,

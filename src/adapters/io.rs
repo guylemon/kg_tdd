@@ -43,12 +43,10 @@ impl GraphArtifactSink for FileGraphArtifactSink {
 }
 
 fn document_id_from_path(path: &Path) -> String {
-    let display_name = path
-        .file_stem()
-        .or_else(|| path.file_name())
-        .map_or_else(|| String::from("document"), |value| {
-            value.to_string_lossy().into_owned()
-        });
+    let display_name = path.file_stem().or_else(|| path.file_name()).map_or_else(
+        || String::from("document"),
+        |value| value.to_string_lossy().into_owned(),
+    );
 
     let mut slug = slugify(&display_name);
     if slug.is_empty() {
