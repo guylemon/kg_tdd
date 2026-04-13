@@ -55,14 +55,16 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use tokenizers::Tokenizer;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
 
     use super::App;
-    use crate::adapters::{FakeSchemaLlmClient, StaticTokenizerSource};
+    use crate::adapters::{FakeSchemaLlmClient, FileGraphArtifactSink, StaticTokenizerSource};
     use crate::application::{AppError, IngestConfig, MaxConcurrency, RunConfig};
     use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
     use crate::ports::{DocumentSource, GraphArtifactSink};
@@ -181,6 +183,45 @@ mod tests {
         assert!(writes[0].1.edges.iter().any(|edge| edge.weight.0 == 2));
     }
 
+    #[test]
+    fn writes_full_artifact_bundle_with_real_sink() {
+        let output_dir = temp_dir("artifact_bundle");
+        let config = IngestConfig {
+            tokenizer_name: String::from("test-wordlevel"),
+            max_chunk_tokens: 32,
+        };
+        let app = App::new(
+            RunConfig {
+                ingest: config,
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: output_dir.clone(),
+                max_concurrency: MaxConcurrency(1),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            FileGraphArtifactSink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        app.run().expect("app run succeeds");
+
+        assert!(output_dir.join("graph.json").is_file());
+        assert!(output_dir.join("index.html").is_file());
+        assert!(output_dir.join("cytoscape.min.js").is_file());
+        assert!(
+            fs::read_to_string(output_dir.join("index.html"))
+                .expect("index html")
+                .contains("./graph.json")
+        );
+    }
+
     fn build_test_tokenizer() -> Tokenizer {
         let vocab = [
             ("[UNK]".to_owned(), 0),
@@ -207,5 +248,15 @@ mod tests {
         let mut tokenizer = Tokenizer::new(model);
         tokenizer.with_pre_tokenizer(Some(Whitespace));
         tokenizer
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("kg_tdd_{label}_{unique}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
     }
 }
