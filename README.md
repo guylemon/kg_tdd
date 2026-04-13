@@ -48,6 +48,9 @@ Current flags:
 - `--output-dir <PATH>`: directory where artifacts will be written
 - `--tokenizer <NAME>`: tokenizer identifier used for chunking
 - `--max-chunk-tokens <N>`: chunk size limit
+- `--provider-mode <fixture|openai-compatible>`: extraction backend mode
+- `--provider-base-url <URL>`: OpenAI-compatible provider base URL
+- `--provider-model <NAME>`: provider model or alias name
 
 Example:
 
@@ -57,6 +60,36 @@ cargo run -- \
   --output-dir out \
   --tokenizer bert-base-cased \
   --max-chunk-tokens 128
+```
+
+`fixture` mode is the default, so the existing CLI remains usable without provider setup.
+
+For `llama.cpp` in OpenAI-compatible mode:
+
+```bash
+llama-server \
+  -m /path/to/model.gguf \
+  --alias llama3.2 \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --reasoning-format none
+```
+
+Then run:
+
+```bash
+cargo run -- \
+  --input fixtures/seed.txt \
+  --output-dir out \
+  --provider-mode openai-compatible \
+  --provider-base-url http://localhost:8080 \
+  --provider-model llama3.2
+```
+
+If your server requires bearer auth, set:
+
+```bash
+export KG_PROVIDER_API_KEY=your-token
 ```
 
 ## Artifact Contract
