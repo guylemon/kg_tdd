@@ -1,10 +1,14 @@
+mod domain;
+mod ports;
+mod adapters;
+mod application;
 mod app;
 
 use std::{io::Cursor, process};
 
 use crate::app::App;
-use crate::app::MaxConcurrency;
 use crate::app::Todo;
+use crate::application::MaxConcurrency;
 
 fn main() {
     // TODO use stdin in near future. To support type-driven development, use this stub type.
