@@ -92,6 +92,7 @@ mod tests {
             description: EdgeDescription(String::from("knows")),
             evidence: vec![FactualClaim {
                 fact: Fact(String::from("Alice knows Bob")),
+                citation_text: String::from("Alice met Bob"),
                 citation: sample_text_unit(),
                 status: crate::domain::EpistemicStatus::Probable,
             }],

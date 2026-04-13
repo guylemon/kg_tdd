@@ -1,42 +1,74 @@
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::any::TypeId;
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use text_splitter::{ChunkConfig, TextSplitter};
 
+use log::debug;
+
 use crate::adapters::TokenizerSource;
-use crate::application::{AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency};
+use crate::application::{
+    AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency, ProviderConfig, ProviderMode,
+};
 use crate::domain::{
     AnnotatedText, EdgeDescription, EntityMention, EntityName, EntityType, EpistemicStatus, Fact,
     FactualClaim, NodeDescription, NodeId, NonEmptyString, RelationshipMention, RelationshipType,
-    TextUnit, Todo, TokenCount,
+    TextUnit, TokenCount,
 };
 use crate::ports::{ChunkExtractor, DocumentPartitioner};
 use tokenizers::Tokenizer;
+use ureq::Agent;
+
+const PROVIDER_TIMEOUT_SECS: u64 = 30;
+const PROVIDER_MAX_RETRIES: usize = 2;
+const PROVIDER_MAX_TOKENS: u16 = 512;
+const PROVIDER_RESPONSE_SNIPPET_LEN: usize = 240;
+const RAW_PROVIDER_DEBUG_ENV: &str = "KG_DEBUG_RAW_PROVIDER";
 
 pub(crate) trait SchemaLlmClient: Send + Sync {
     fn generate_with_schema<T>(
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, Todo>
+    ) -> Result<T, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static;
 }
 
-impl SchemaLlmClient for Todo {
+pub(crate) enum ConfiguredSchemaLlmClient {
+    Fixture(FakeSchemaLlmClient),
+    OpenAiCompatible(OpenAiCompatibleSchemaLlmClient),
+}
+
+impl ConfiguredSchemaLlmClient {
+    pub(crate) fn from_config(config: &ProviderConfig) -> Result<Self, AppError> {
+        debug!(
+            "configuring schema LLM client for provider_mode={:?}",
+            config.mode
+        );
+        match config.mode {
+            ProviderMode::Fixture => Ok(Self::Fixture(FakeSchemaLlmClient)),
+            ProviderMode::OpenAiCompatible => Ok(Self::OpenAiCompatible(
+                OpenAiCompatibleSchemaLlmClient::from_config(config)?,
+            )),
+        }
+    }
+}
+
+impl SchemaLlmClient for ConfiguredSchemaLlmClient {
     fn generate_with_schema<T>(
         &self,
-        _sys_prompt: NonEmptyString,
-        _user_prompt: NonEmptyString,
-    ) -> Result<T, Todo>
+        sys_prompt: NonEmptyString,
+        user_prompt: NonEmptyString,
+    ) -> Result<T, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        let schema = schemars::schema_for!(T);
-        let schema_json = serde_json::to_string_pretty(&schema).map_err(|_| Todo)?;
-        serde_json::from_str(&schema_json).map_err(|_| Todo)
+        match self {
+            Self::Fixture(client) => client.generate_with_schema(sys_prompt, user_prompt),
+            Self::OpenAiCompatible(client) => client.generate_with_schema(sys_prompt, user_prompt),
+        }
     }
 }
 
@@ -47,19 +79,207 @@ impl SchemaLlmClient for FakeSchemaLlmClient {
         &self,
         _sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, Todo>
+    ) -> Result<T, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        let payload = if TypeId::of::<T>() == TypeId::of::<AiExtractionResponse>() {
-            fixture_entities(&user_prompt.0)
-        } else if TypeId::of::<T>() == TypeId::of::<AiRelationshipExtractionResponse>() {
-            fixture_relationships(&user_prompt.0)
-        } else {
-            return Err(Todo);
+        debug!(
+            "using fixture schema client for {} with user_prompt_len={}",
+            std::any::type_name::<T>(),
+            user_prompt.0.len()
+        );
+        let payload =
+            if std::any::TypeId::of::<T>() == std::any::TypeId::of::<AiExtractionResponse>() {
+                fixture_entities(&user_prompt.0)
+            } else if std::any::TypeId::of::<T>()
+                == std::any::TypeId::of::<AiRelationshipExtractionResponse>()
+            {
+                fixture_relationships(&user_prompt.0)
+            } else {
+                return Err(AppError::provider_response(
+                    "unsupported fixture schema requested",
+                ));
+            };
+
+        serde_json::from_value(payload)
+            .map_err(|_| AppError::provider_response("fixture response does not match schema"))
+    }
+}
+
+pub(crate) struct OpenAiCompatibleSchemaLlmClient {
+    agent: Agent,
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+}
+
+impl OpenAiCompatibleSchemaLlmClient {
+    fn from_config(config: &ProviderConfig) -> Result<Self, AppError> {
+        let base_url = config.base_url.clone().ok_or_else(|| {
+            AppError::invalid_provider_config(
+                "missing required flag for openai-compatible mode: --provider-base-url",
+            )
+        })?;
+        validate_base_url(&base_url)?;
+
+        let model = config.model.clone().ok_or_else(|| {
+            AppError::invalid_provider_config(
+                "missing required flag for openai-compatible mode: --provider-model",
+            )
+        })?;
+
+        let agent_config = Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(PROVIDER_TIMEOUT_SECS)))
+            .build();
+        let api_key = std::env::var("KG_PROVIDER_API_KEY").ok();
+
+        debug!(
+            "configured openai-compatible client: base_url={}, model={}, has_api_key={}",
+            base_url,
+            model,
+            api_key.is_some()
+        );
+
+        Ok(Self {
+            agent: agent_config.into(),
+            base_url: trim_trailing_slash(&base_url),
+            model,
+            api_key,
+        })
+    }
+
+    fn call_once<T>(
+        &self,
+        sys_prompt: NonEmptyString,
+        user_prompt: NonEmptyString,
+    ) -> Result<T, AppError>
+    where
+        T: DeserializeOwned + JsonSchema + 'static,
+    {
+        let endpoint = format!("{}/v1/chat/completions", self.base_url);
+        let body = build_chat_request::<T>(&self.model, sys_prompt, user_prompt)?;
+        let request_json = serde_json::to_string(&body).map_err(|_| {
+            AppError::provider_response("failed to serialize provider request body")
+        })?;
+        let schema_name = std::any::type_name::<T>();
+
+        log_provider_request(
+            schema_name,
+            endpoint.as_str(),
+            &self.model,
+            &body,
+            &request_json,
+        );
+
+        let mut request = self
+            .agent
+            .post(&endpoint)
+            .header("Content-Type", "application/json");
+        if let Some(api_key) = &self.api_key {
+            request = request.header("Authorization", &format!("Bearer {api_key}"));
+        }
+
+        let mut response = match request.send_json(&body) {
+            Ok(response) => {
+                debug!("provider request succeeded: schema={schema_name}, endpoint={endpoint}");
+                response
+            }
+            Err(ureq::Error::StatusCode(code)) => {
+                debug!(
+                    "provider request returned non-success status: schema={schema_name}, endpoint={endpoint}, status={code}"
+                );
+                return Err(classify_status_code(code, endpoint.as_str()));
+            }
+            Err(error) => {
+                debug!(
+                    "provider request failed before response parsing: schema={schema_name}, endpoint={endpoint}, error={error}"
+                );
+                return Err(classify_transport_error(error, endpoint.as_str()));
+            }
         };
 
-        serde_json::from_value(payload).map_err(|_| Todo)
+        let response_text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|_| AppError::provider_response("response body is not valid UTF-8 text"))?;
+        log_provider_response(schema_name, endpoint.as_str(), &response_text);
+
+        let response_body: ChatCompletionResponse =
+            serde_json::from_str(&response_text).map_err(|_| {
+                debug!(
+                    "provider response JSON parse failed: schema={}, endpoint={}, snippet={}",
+                    schema_name,
+                    endpoint,
+                    snippet(&response_text, PROVIDER_RESPONSE_SNIPPET_LEN)
+                );
+                AppError::provider_response("response body is not valid JSON")
+            })?;
+
+        let content = response_body
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|choice| choice.message.content)
+            .ok_or_else(|| {
+                debug!(
+                    "provider response missing assistant message content: schema={schema_name}, endpoint={endpoint}"
+                );
+                AppError::provider_response("assistant message content missing from response")
+            })?;
+
+        if raw_provider_debug_enabled() {
+            debug!("raw provider assistant content for {schema_name}: {content}");
+        } else {
+            debug!(
+                "provider assistant content summary for {}: len={}, snippet={}",
+                schema_name,
+                content.len(),
+                snippet(&content, PROVIDER_RESPONSE_SNIPPET_LEN)
+            );
+        }
+
+        serde_json::from_str(&content).map_err(|_| {
+            debug!(
+                "provider assistant content schema mismatch: schema={}, snippet={}",
+                schema_name,
+                snippet(&content, PROVIDER_RESPONSE_SNIPPET_LEN)
+            );
+            AppError::provider_response("assistant content does not match schema")
+        })
+    }
+}
+
+impl SchemaLlmClient for OpenAiCompatibleSchemaLlmClient {
+    fn generate_with_schema<T>(
+        &self,
+        sys_prompt: NonEmptyString,
+        user_prompt: NonEmptyString,
+    ) -> Result<T, AppError>
+    where
+        T: DeserializeOwned + JsonSchema + 'static,
+    {
+        let schema_name = std::any::type_name::<T>();
+        let mut attempts = 0;
+
+        loop {
+            attempts += 1;
+            debug!(
+                "provider attempt {attempts} for schema={schema_name} (max_retries={PROVIDER_MAX_RETRIES})"
+            );
+
+            match self.call_once::<T>(sys_prompt.clone(), user_prompt.clone()) {
+                Ok(value) => return Ok(value),
+                Err(err) if is_retryable(&err) && attempts <= PROVIDER_MAX_RETRIES => {
+                    debug!("retrying provider request for schema={schema_name} after error={err}");
+                }
+                Err(err) => {
+                    debug!(
+                        "provider request failed for schema={schema_name} after {attempts} attempt(s): {err}"
+                    );
+                    return Err(err);
+                }
+            }
+        }
     }
 }
 
@@ -103,7 +323,7 @@ where
             ChunkConfig::new(self.config.max_chunk_tokens).with_sizer(self.tokenizer.clone());
         let splitter = TextSplitter::new(config);
 
-        splitter
+        let chunks: Vec<_> = splitter
             .chunks(&document.text.0)
             .map(|text| {
                 let text = text.to_owned();
@@ -114,7 +334,15 @@ where
                     token_count,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, AppError>>()?;
+
+        debug!(
+            "partitioned document {} into {} chunk(s)",
+            document.id.0,
+            chunks.len()
+        );
+
+        Ok(chunks)
     }
 }
 
@@ -136,20 +364,30 @@ struct ExtractionTask {
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RelationshipExtract {
     source: ExtractedEntity,
     target: ExtractedEntity,
     relationship_type: RelationshipType,
     description: String,
-    fact: String,
+    evidence: Vec<ExtractedEvidence>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct AiRelationshipExtractionResponse {
     relationships: Vec<RelationshipExtract>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExtractedEvidence {
+    fact: String,
+    citation_text: String,
+}
+
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ExtractedEntity {
     name: String,
     entity_type: EntityType,
@@ -157,8 +395,46 @@ struct ExtractedEntity {
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct AiExtractionResponse {
     entities: Vec<ExtractedEntity>,
+}
+
+#[derive(Serialize)]
+struct ChatCompletionRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    response_format: ResponseFormat,
+    temperature: f32,
+    max_tokens: u16,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    kind: String,
+    schema: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionResponse {
+    choices: Vec<ChatCompletionChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionChoice {
+    message: ChatCompletionMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionMessage {
+    content: Option<String>,
 }
 
 fn map_reduce_extract<C>(
@@ -226,10 +502,20 @@ fn extract_chunk<C>(chunk: Chunk, llm_client: &C) -> Result<ExtractionOutcome, A
 where
     C: SchemaLlmClient + 'static,
 {
+    debug!(
+        "extracting chunk for document={} with token_count={}",
+        chunk.document_id.0, chunk.token_count.0
+    );
     let entity_response = request_entity_extraction(&chunk.text, llm_client)?;
     let marked = mark_entities(chunk, &entity_response);
     let entities = extract_entities(&marked, entity_response);
     let relationships = extract_relationships(&marked, llm_client)?;
+
+    debug!(
+        "finished chunk extraction: entities={}, relationships={}",
+        entities.len(),
+        relationships.len()
+    );
 
     Ok(ExtractionOutcome {
         entities,
@@ -247,24 +533,49 @@ where
     let sys_prompt = NonEmptyString(String::from("Extract entity relationships from the text."));
     let user_prompt = NonEmptyString(text_unit.text.0.clone());
     let response = llm_client
-        .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)
-        .map_err(|_| AppError::ExtractChunk)?;
+        .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
 
+    let source_text = deannotate_text(&text_unit.text.0);
     Ok(response
         .relationships
         .into_iter()
-        .map(|relationship| RelationshipMention {
-            source: entity_name_to_node_id(&relationship.source.name),
-            target: entity_name_to_node_id(&relationship.target.name),
-            description: EdgeDescription(relationship.description),
-            evidence: vec![FactualClaim {
-                fact: Fact(relationship.fact),
-                citation: text_unit.clone(),
-                status: EpistemicStatus::Probable,
-            }],
-            relationship_type: relationship.relationship_type,
+        .filter_map(|relationship| {
+            let evidence = relationship
+                .evidence
+                .into_iter()
+                .filter_map(|item| map_evidence_item(item, text_unit, &source_text))
+                .collect::<Vec<_>>();
+
+            if evidence.is_empty() {
+                return None;
+            }
+
+            Some(RelationshipMention {
+                source: entity_name_to_node_id(&relationship.source.name),
+                target: entity_name_to_node_id(&relationship.target.name),
+                description: EdgeDescription(relationship.description),
+                evidence,
+                relationship_type: relationship.relationship_type,
+            })
         })
         .collect())
+}
+
+fn map_evidence_item(
+    item: ExtractedEvidence,
+    text_unit: &TextUnit,
+    source_text: &str,
+) -> Option<FactualClaim> {
+    if !source_text.contains(&item.citation_text) {
+        return None;
+    }
+
+    Some(FactualClaim {
+        fact: Fact(item.fact),
+        citation_text: item.citation_text,
+        citation: text_unit.clone(),
+        status: EpistemicStatus::Probable,
+    })
 }
 
 fn extract_entities(text_unit: &TextUnit, response: AiExtractionResponse) -> Vec<EntityMention> {
@@ -307,7 +618,24 @@ fn annotate_text(text: String, response: &AiExtractionResponse) -> String {
         );
         result = result.replace(&entity.name, &annotation);
     }
+
     result
+}
+
+fn deannotate_text(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut in_tag = false;
+
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => plain.push(ch),
+            _ => {}
+        }
+    }
+
+    plain
 }
 
 fn entity_name_to_node_id(name: &str) -> NodeId {
@@ -377,7 +705,12 @@ fn fixture_relationships(user_prompt: &str) -> serde_json::Value {
                     },
                     "relationship_type": "IsA",
                     "description": "apple is a fruit",
-                    "fact": "An apple is a red fruit"
+                    "evidence": [
+                        {
+                            "fact": "An apple is a red fruit",
+                            "citation_text": "apple is a red fruit"
+                        }
+                    ]
                 },
                 {
                     "source": {
@@ -392,7 +725,12 @@ fn fixture_relationships(user_prompt: &str) -> serde_json::Value {
                     },
                     "relationship_type": "GrowsOn",
                     "description": "apple grows on trees",
-                    "fact": "apple grows on trees"
+                    "evidence": [
+                        {
+                            "fact": "apple grows on trees",
+                            "citation_text": "grows on trees"
+                        }
+                    ]
                 }
             ]
         })
@@ -410,9 +748,7 @@ where
 {
     let sys_prompt = NonEmptyString(String::from("Mark entities in the text."));
     let user_prompt = text.clone();
-    llm_client
-        .generate_with_schema::<AiExtractionResponse>(sys_prompt, user_prompt)
-        .map_err(|_| AppError::ExtractChunk)
+    llm_client.generate_with_schema::<AiExtractionResponse>(sys_prompt, user_prompt)
 }
 
 fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError> {
@@ -422,11 +758,180 @@ fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError
     Ok(TokenCount(encoding.len()))
 }
 
+fn schema_for<T>() -> Result<serde_json::Value, AppError>
+where
+    T: JsonSchema,
+{
+    serde_json::to_value(schemars::schema_for!(T))
+        .map_err(|_| AppError::provider_response("failed to serialize request schema"))
+}
+
+fn build_chat_request<T>(
+    model: &str,
+    sys_prompt: NonEmptyString,
+    user_prompt: NonEmptyString,
+) -> Result<ChatCompletionRequest, AppError>
+where
+    T: JsonSchema,
+{
+    let schema = schema_for::<T>()?;
+    Ok(ChatCompletionRequest {
+        model: model.to_owned(),
+        messages: vec![
+            ChatMessage {
+                role: String::from("system"),
+                content: sys_prompt.0,
+            },
+            ChatMessage {
+                role: String::from("user"),
+                content: user_prompt.0,
+            },
+        ],
+        response_format: ResponseFormat {
+            kind: String::from("json_object"),
+            schema,
+        },
+        temperature: 0.0,
+        max_tokens: PROVIDER_MAX_TOKENS,
+    })
+}
+
+fn trim_trailing_slash(url: &str) -> String {
+    url.trim_end_matches('/').to_owned()
+}
+
+fn validate_base_url(base_url: &str) -> Result<(), AppError> {
+    match ureq::http::Uri::try_from(base_url) {
+        Ok(uri) if uri.scheme().is_some() && uri.host().is_some() => Ok(()),
+        _ => Err(AppError::invalid_provider_config(format!(
+            "provider base URL is invalid: {base_url}"
+        ))),
+    }
+}
+
+fn classify_transport_error(error: ureq::Error, endpoint: &str) -> AppError {
+    match error {
+        ureq::Error::Timeout(timeout) => {
+            AppError::provider_timeout(format!("{timeout} while calling {endpoint}"))
+        }
+        ureq::Error::StatusCode(code) => classify_status_code(code, endpoint),
+        other => AppError::provider_transport(format!("{other} while calling {endpoint}")),
+    }
+}
+
+fn classify_status_code(code: u16, endpoint: &str) -> AppError {
+    let message = format!("HTTP {code} from {endpoint}");
+    if code == 401 || code == 403 {
+        AppError::provider_authentication(message)
+    } else if (500..=599).contains(&code) {
+        AppError::provider_transport(message)
+    } else {
+        AppError::provider_response(message)
+    }
+}
+
+fn is_retryable(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::ProviderTransport(_) | AppError::ProviderTimeout(_)
+    )
+}
+
+#[cfg(test)]
+fn retry_operation<T, F>(max_retries: usize, mut operation: F) -> Result<T, AppError>
+where
+    F: FnMut() -> Result<T, AppError>,
+{
+    let mut attempts = 0;
+    loop {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(err) if is_retryable(&err) && attempts < max_retries => {
+                attempts += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn raw_provider_debug_enabled() -> bool {
+    matches!(
+        std::env::var(RAW_PROVIDER_DEBUG_ENV).ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
+fn log_provider_request(
+    schema_name: &str,
+    endpoint: &str,
+    model: &str,
+    body: &ChatCompletionRequest,
+    request_json: &str,
+) {
+    if raw_provider_debug_enabled() {
+        debug!(
+            "raw provider request for schema={schema_name}, endpoint={endpoint}, model={model}: {request_json}"
+        );
+        return;
+    }
+
+    let system_prompt_len = body
+        .messages
+        .iter()
+        .find(|message| message.role == "system")
+        .map_or(0, |message| message.content.len());
+    let user_prompt_len = body
+        .messages
+        .iter()
+        .find(|message| message.role == "user")
+        .map_or(0, |message| message.content.len());
+
+    debug!(
+        "provider request summary: schema={schema_name}, endpoint={endpoint}, model={model}, request_bytes={}, system_prompt_len={}, user_prompt_len={}",
+        request_json.len(),
+        system_prompt_len,
+        user_prompt_len
+    );
+}
+
+fn log_provider_response(schema_name: &str, endpoint: &str, response_text: &str) {
+    if raw_provider_debug_enabled() {
+        debug!(
+            "raw provider response for schema={schema_name}, endpoint={endpoint}: {response_text}"
+        );
+        return;
+    }
+
+    debug!(
+        "provider response summary: schema={schema_name}, endpoint={endpoint}, response_bytes={}, snippet={}",
+        response_text.len(),
+        snippet(response_text, PROVIDER_RESPONSE_SNIPPET_LEN)
+    );
+}
+
+fn snippet(value: &str, max_len: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_len {
+        return value.to_owned();
+    }
+
+    let prefix: String = value.chars().take(max_len).collect();
+    format!("{prefix}...")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FakeSchemaLlmClient, ParallelChunkExtractor, extract_chunk};
+    use schemars::JsonSchema;
+
+    use super::{
+        ConfiguredSchemaLlmClient, FakeSchemaLlmClient, ParallelChunkExtractor, SchemaLlmClient,
+        build_chat_request, classify_status_code, extract_chunk, retry_operation,
+        validate_base_url,
+    };
     use crate::adapters::StaticTokenizerSource;
-    use crate::application::{Chunk, IngestConfig, MaxConcurrency};
+    use crate::application::{
+        AppError, Chunk, IngestConfig, MaxConcurrency, ProviderConfig, ProviderMode,
+    };
     use crate::domain::{Document, DocumentId, NonEmptyString};
     use crate::ports::DocumentPartitioner;
     use tokenizers::Tokenizer;
@@ -518,15 +1023,15 @@ mod tests {
                 _tokenizer_name: &str,
             ) -> Result<Tokenizer, crate::application::AppError> {
                 Err(crate::application::AppError::load_tokenizer(
-                    "missing-tokenizer",
+                    "test-wordlevel",
                 ))
             }
         }
 
         let result = ParallelChunkExtractor::new(
             IngestConfig {
-                tokenizer_name: String::from("missing-tokenizer"),
-                max_chunk_tokens: 8,
+                tokenizer_name: String::from("test-wordlevel"),
+                max_chunk_tokens: 32,
             },
             MaxConcurrency(1),
             FakeSchemaLlmClient,
@@ -537,6 +1042,259 @@ mod tests {
             result,
             Err(crate::application::AppError::LoadTokenizer(_))
         ));
+    }
+
+    #[test]
+    fn validates_provider_base_url() {
+        validate_base_url("http://localhost:8080").expect("valid URL");
+        assert!(validate_base_url("localhost:8080").is_err());
+    }
+
+    #[test]
+    fn configured_client_uses_fixture_mode_by_default() {
+        let client = ConfiguredSchemaLlmClient::from_config(&ProviderConfig {
+            mode: ProviderMode::Fixture,
+            base_url: None,
+            model: None,
+        })
+        .expect("fixture client");
+
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: crate::domain::TokenCount(10),
+            },
+            &client,
+        )
+        .expect("extracts");
+
+        assert_eq!(outcome.entities.len(), 3);
+    }
+
+    #[test]
+    fn openai_compatible_client_sends_schema_constrained_request() {
+        let request = build_chat_request::<super::AiExtractionResponse>(
+            "llama3.2",
+            NonEmptyString(String::from("system prompt")),
+            NonEmptyString(String::from("user prompt")),
+        )
+        .expect("request");
+        let request = serde_json::to_value(request).expect("request json");
+
+        assert_eq!(request["model"], "llama3.2");
+        assert_eq!(request["messages"][0]["role"], "system");
+        assert_eq!(request["messages"][1]["role"], "user");
+        assert_eq!(request["response_format"]["type"], "json_object");
+        assert!(request["response_format"]["schema"].is_object());
+        assert_eq!(request["temperature"], 0.0);
+    }
+
+    #[test]
+    fn relationship_schema_includes_closed_nested_evidence_items() {
+        let request = build_chat_request::<super::AiRelationshipExtractionResponse>(
+            "llama3.2",
+            NonEmptyString(String::from("system prompt")),
+            NonEmptyString(String::from("user prompt")),
+        )
+        .expect("request");
+        let request = serde_json::to_value(request).expect("request json");
+        let schema = &request["response_format"]["schema"];
+        let schema_text = schema.to_string();
+
+        assert!(schema_text.contains("\"citation_text\""));
+        assert!(schema_text.contains("\"fact\""));
+        assert!(schema_text.contains("\"additionalProperties\":false"));
+    }
+
+    #[test]
+    fn openai_compatible_client_retries_transient_failures() {
+        let mut attempts = 0;
+        let result = retry_operation::<(), _>(2, || {
+            attempts += 1;
+            if attempts == 1 {
+                Err(classify_status_code(
+                    500,
+                    "http://localhost:8080/v1/chat/completions",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn openai_compatible_client_does_not_retry_auth_failures() {
+        let mut attempts = 0;
+        let result = retry_operation::<(), _>(2, || {
+            attempts += 1;
+            Err(AppError::provider_authentication("forbidden"))
+        });
+
+        assert!(matches!(result, Err(AppError::ProviderAuthentication(_))));
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn drops_invalid_evidence_items_and_keeps_relationship_with_valid_quote() {
+        struct EvidenceClient;
+
+        impl SchemaLlmClient for EvidenceClient {
+            fn generate_with_schema<T>(
+                &self,
+                _sys_prompt: NonEmptyString,
+                _user_prompt: NonEmptyString,
+            ) -> Result<T, AppError>
+            where
+                T: serde::de::DeserializeOwned + JsonSchema + 'static,
+            {
+                let payload = if std::any::TypeId::of::<T>()
+                    == std::any::TypeId::of::<super::AiExtractionResponse>()
+                {
+                    serde_json::json!({
+                        "entities": [
+                            {
+                                "name": "apple",
+                                "entity_type": "Lifeform",
+                                "description": "A red fruit"
+                            },
+                            {
+                                "name": "fruit",
+                                "entity_type": "Concept",
+                                "description": "An edible plant structure"
+                            }
+                        ]
+                    })
+                } else {
+                    serde_json::json!({
+                        "relationships": [
+                            {
+                                "source": {
+                                    "name": "apple",
+                                    "entity_type": "Lifeform",
+                                    "description": "A red fruit"
+                                },
+                                "target": {
+                                    "name": "fruit",
+                                    "entity_type": "Concept",
+                                    "description": "An edible plant structure"
+                                },
+                                "relationship_type": "IsA",
+                                "description": "apple is a fruit",
+                                "evidence": [
+                                    {
+                                        "fact": "An apple is a red fruit",
+                                        "citation_text": "apple is a red fruit"
+                                    },
+                                    {
+                                        "fact": "Not grounded",
+                                        "citation_text": "pear is blue"
+                                    }
+                                ]
+                            }
+                        ]
+                    })
+                };
+
+                serde_json::from_value(payload)
+                    .map_err(|_| AppError::provider_response("test payload invalid"))
+            }
+        }
+
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: crate::domain::TokenCount(10),
+            },
+            &EvidenceClient,
+        )
+        .expect("outcome");
+
+        assert_eq!(outcome.relationships.len(), 1);
+        assert_eq!(outcome.relationships[0].evidence.len(), 1);
+        assert_eq!(
+            outcome.relationships[0].evidence[0].citation_text,
+            "apple is a red fruit"
+        );
+    }
+
+    #[test]
+    fn drops_relationship_when_all_evidence_items_are_invalid() {
+        struct InvalidEvidenceClient;
+
+        impl SchemaLlmClient for InvalidEvidenceClient {
+            fn generate_with_schema<T>(
+                &self,
+                _sys_prompt: NonEmptyString,
+                _user_prompt: NonEmptyString,
+            ) -> Result<T, AppError>
+            where
+                T: serde::de::DeserializeOwned + JsonSchema + 'static,
+            {
+                let payload = if std::any::TypeId::of::<T>()
+                    == std::any::TypeId::of::<super::AiExtractionResponse>()
+                {
+                    serde_json::json!({
+                        "entities": [
+                            {
+                                "name": "apple",
+                                "entity_type": "Lifeform",
+                                "description": "A red fruit"
+                            },
+                            {
+                                "name": "fruit",
+                                "entity_type": "Concept",
+                                "description": "An edible plant structure"
+                            }
+                        ]
+                    })
+                } else {
+                    serde_json::json!({
+                        "relationships": [
+                            {
+                                "source": {
+                                    "name": "apple",
+                                    "entity_type": "Lifeform",
+                                    "description": "A red fruit"
+                                },
+                                "target": {
+                                    "name": "fruit",
+                                    "entity_type": "Concept",
+                                    "description": "An edible plant structure"
+                                },
+                                "relationship_type": "IsA",
+                                "description": "apple is a fruit",
+                                "evidence": [
+                                    {
+                                        "fact": "Not grounded",
+                                        "citation_text": "pear is blue"
+                                    }
+                                ]
+                            }
+                        ]
+                    })
+                };
+
+                serde_json::from_value(payload)
+                    .map_err(|_| AppError::provider_response("test payload invalid"))
+            }
+        }
+
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: crate::domain::TokenCount(10),
+            },
+            &InvalidEvidenceClient,
+        )
+        .expect("outcome");
+
+        assert!(outcome.relationships.is_empty());
     }
 
     fn build_test_tokenizer() -> Tokenizer {

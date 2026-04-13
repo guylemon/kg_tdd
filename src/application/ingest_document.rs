@@ -51,8 +51,8 @@ mod tests {
     use crate::application::{AppError, Chunk, ExtractionOutcome};
     use crate::domain::{
         AnnotatedText, Document, DocumentId, EdgeDescription, EntityMention, EntityName,
-        EntityType, NodeDescription, NonEmptyString, RelationshipMention, RelationshipType,
-        TextUnit, TokenCount,
+        EntityType, Fact, FactualClaim, NodeDescription, NonEmptyString, RelationshipMention,
+        RelationshipType, TextUnit, TokenCount,
     };
     use crate::ports::{ChunkExtractor, DocumentPartitioner};
     use std::cell::RefCell;
@@ -140,7 +140,12 @@ mod tests {
                     source: crate::domain::NodeId(String::from("Alice")),
                     target: crate::domain::NodeId(String::from("Bob")),
                     description: EdgeDescription(String::from("knows")),
-                    evidence: Vec::new(),
+                    evidence: vec![FactualClaim {
+                        fact: Fact(String::from("Alice met Bob")),
+                        citation_text: String::from("Alice met Bob"),
+                        citation: text_unit.clone(),
+                        status: crate::domain::EpistemicStatus::Probable,
+                    }],
                     relationship_type: RelationshipType::IsA,
                 }],
             })]),
@@ -157,6 +162,8 @@ mod tests {
         assert_eq!(graph.nodes.len(), 1);
         assert_eq!(graph.nodes[0].mentions.len(), 2);
         assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].evidence.len(), 1);
+        assert_eq!(graph.edges[0].evidence[0].citation_text, "Alice met Bob");
     }
 
     fn sample_chunk() -> Chunk {

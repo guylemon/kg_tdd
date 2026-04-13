@@ -22,7 +22,9 @@ The main recommendation is to sequence reliability and evaluation before broad f
 
 ## Milestone 1: CLI Product Completion
 
-Completed in this milestone so far:
+Status: complete as of April 13, 2026.
+
+Completed in this milestone:
 
 - Replaced the prototype `stdin -> stdout` flow with a real single-document CLI.
 - Added explicit CLI flags for:
@@ -32,6 +34,11 @@ Completed in this milestone so far:
   - max chunk tokens
 - Switched the application to file-based input and artifact-oriented output.
 - Added `graph.json` generation into the requested output directory.
+- Added the static artifact bundle alongside `graph.json`:
+  - `index.html`
+  - local `cytoscape.min.js`
+- Kept the viewer build-free and static. The page loads local JS and local JSON only.
+- Defined the generated output directory layout as a stable artifact contract.
 - Added clearer user-facing failures and exit codes for:
   - CLI usage errors
   - invalid input path
@@ -41,32 +48,29 @@ Completed in this milestone so far:
   - output directory / write failure
 - Replaced the placeholder `stdin-document` identity with a path-derived document ID.
 - Updated the developer convenience script to invoke the CLI through the new file-based interface.
-
-Still required to complete this milestone:
-
-- Add the static artifact bundle alongside `graph.json`:
-  - `index.html`
-  - local `cytoscape.min.js`
-- Keep the viewer build-free and static. The page should load local JS and local JSON only.
-- Define the generated output directory layout as a stable artifact contract.
-- Add end-to-end tests that validate the full artifact bundle, not just `graph.json`.
+- Added end-to-end tests that validate the full artifact bundle, not just `graph.json`.
 
 Why this matters:
-The repo now has a usable CLI and file-output path, but Milestone 1 is only complete once the generated directory is directly inspectable as a static graph viewer rather than only a JSON artifact.
+The generated directory is now directly inspectable as a static graph viewer rather than only a JSON artifact, so the CLI product surface for Milestone 1 is in place.
 
 ## Milestone 2: Provider Integration Layer
 
-- Replace `FakeSchemaLlmClient` with real provider adapters behind the existing schema client boundary.
-- Add provider configuration and secrets handling for the CLI.
-- Define stable structured extraction schemas for:
+Status: complete as of April 13, 2026.
+
+Completed in this milestone:
+
+- Added a real provider adapter behind the existing schema client boundary.
+- Added provider configuration and secrets handling for the CLI.
+- Defined stable structured extraction schemas for:
   - entity extraction
   - relationship extraction
   - evidence/citation extraction
-- Preserve the fake client as a deterministic test fixture path.
-- Add provider retries, timeout handling, and per-call error classification.
+- Preserved the fake client as a deterministic test fixture path.
+- Added provider retries, timeout handling, and per-call error classification.
+- Added provider debugging logs for live schema-mismatch diagnosis, with raw prompt/response logging gated behind an explicit opt-in environment flag.
 
 Why this matters:
-Provider work needs to include deterministic fixture parity, config handling, and operational error behavior, not just raw API calls.
+Provider work now includes deterministic fixture parity, config handling, and operational error behavior rather than only raw API calls, so the provider integration layer is in place for subsequent quality and semantics work.
 
 ## Milestone 3: Graph Semantics and Consolidation
 
