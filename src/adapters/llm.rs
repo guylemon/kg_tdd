@@ -2,15 +2,18 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use text_splitter::{ChunkConfig, TextSplitter};
 
-use crate::application::{AppError, Chunk, ExtractionOutcome, MaxConcurrency};
+use crate::adapters::TokenizerSource;
+use crate::application::{AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency};
 use crate::domain::{
     AnnotatedText, EdgeDescription, EntityMention, EntityName, EntityType, EpistemicStatus, Fact,
-    FactualClaim, NodeDescription, NodeId, NonEmptyString, RelationshipMention,
-    RelationshipType, TextUnit, Todo, TokenCount,
+    FactualClaim, NodeDescription, NodeId, NonEmptyString, RelationshipMention, RelationshipType,
+    TextUnit, Todo, TokenCount,
 };
 use crate::ports::{ChunkExtractor, DocumentPartitioner};
+use tokenizers::Tokenizer;
 
 pub(crate) trait SchemaLlmClient: Send + Sync {
     fn generate_with_schema<T>(
@@ -61,19 +64,33 @@ impl SchemaLlmClient for FakeSchemaLlmClient {
 }
 
 pub(crate) struct ParallelChunkExtractor<C> {
+    config: IngestConfig,
     max_concurrency: MaxConcurrency,
     llm_client: Arc<C>,
+    tokenizer: Tokenizer,
 }
 
 impl<C> ParallelChunkExtractor<C>
 where
     C: SchemaLlmClient + 'static,
 {
-    pub(crate) fn new(max_concurrency: MaxConcurrency, llm_client: C) -> Self {
-        Self {
+    pub(crate) fn new<T>(
+        config: IngestConfig,
+        max_concurrency: MaxConcurrency,
+        llm_client: C,
+        tokenizer_source: &T,
+    ) -> Result<Self, AppError>
+    where
+        T: TokenizerSource,
+    {
+        let tokenizer = tokenizer_source.load(&config.tokenizer_name)?;
+
+        Ok(Self {
+            config,
             max_concurrency,
             llm_client: Arc::new(llm_client),
-        }
+            tokenizer,
+        })
     }
 }
 
@@ -82,11 +99,22 @@ where
     C: SchemaLlmClient + 'static,
 {
     fn partition(&self, document: &crate::domain::Document) -> Result<Vec<Chunk>, AppError> {
-        Ok(vec![Chunk {
-            document_id: document.id.clone(),
-            text: document.text.clone(),
-            token_count: TokenCount::from_text(&document.text),
-        }])
+        let config =
+            ChunkConfig::new(self.config.max_chunk_tokens).with_sizer(self.tokenizer.clone());
+        let splitter = TextSplitter::new(config);
+
+        splitter
+            .chunks(&document.text.0)
+            .map(|text| {
+                let text = text.to_owned();
+                let token_count = token_count(&self.tokenizer, &text)?;
+                Ok(Chunk {
+                    document_id: document.id.clone(),
+                    text: NonEmptyString(text),
+                    token_count,
+                })
+            })
+            .collect()
     }
 }
 
@@ -273,7 +301,10 @@ fn annotate_text(text: String, response: &AiExtractionResponse) -> String {
     entities.sort_by(|left, right| right.name.len().cmp(&left.name.len()));
 
     for entity in entities {
-        let annotation = format!("<entity type=\"{:?}\">{}</entity>", entity.entity_type, entity.name);
+        let annotation = format!(
+            "<entity type=\"{:?}\">{}</entity>",
+            entity.entity_type, entity.name
+        );
         result = result.replace(&entity.name, &annotation);
     }
     result
@@ -287,12 +318,21 @@ fn slugify(value: &str) -> String {
     value
         .to_lowercase()
         .chars()
-        .map(|char| if char.is_ascii_alphanumeric() { char } else { '-' })
+        .map(|char| {
+            if char.is_ascii_alphanumeric() {
+                char
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
 fn fixture_entities(user_prompt: &str) -> serde_json::Value {
-    if user_prompt.contains("An apple is a red fruit that grows on trees") {
+    if user_prompt.contains("apple")
+        && user_prompt.contains("fruit")
+        && user_prompt.contains("trees")
+    {
         serde_json::json!({
             "entities": [
                 {
@@ -375,27 +415,36 @@ where
         .map_err(|_| AppError::ExtractChunk)
 }
 
-trait TokenCountFromText {
-    fn from_text(value: &NonEmptyString) -> Self;
-}
-
-impl TokenCountFromText for crate::domain::TokenCount {
-    fn from_text(value: &NonEmptyString) -> Self {
-        let count = value.0.split_whitespace().count();
-        TokenCount(count)
-    }
+fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError> {
+    let encoding = tokenizer
+        .encode(text, false)
+        .map_err(|_| AppError::PartitionDocument)?;
+    Ok(TokenCount(encoding.len()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_chunk, FakeSchemaLlmClient, ParallelChunkExtractor};
-    use crate::application::{Chunk, MaxConcurrency};
+    use super::{FakeSchemaLlmClient, ParallelChunkExtractor, extract_chunk};
+    use crate::adapters::StaticTokenizerSource;
+    use crate::application::{Chunk, IngestConfig, MaxConcurrency};
     use crate::domain::{Document, DocumentId, NonEmptyString};
     use crate::ports::DocumentPartitioner;
+    use tokenizers::Tokenizer;
+    use tokenizers::models::wordlevel::WordLevel;
+    use tokenizers::pre_tokenizers::whitespace::Whitespace;
 
     #[test]
     fn partitions_document_into_single_chunk() {
-        let extractor = ParallelChunkExtractor::new(MaxConcurrency(1), FakeSchemaLlmClient);
+        let extractor = ParallelChunkExtractor::new(
+            IngestConfig {
+                tokenizer_name: String::from("test-wordlevel"),
+                max_chunk_tokens: 32,
+            },
+            MaxConcurrency(1),
+            FakeSchemaLlmClient,
+            &StaticTokenizerSource::new(build_test_tokenizer()),
+        )
+        .expect("extractor");
         let document = Document {
             id: DocumentId(String::from("stdin-document")),
             text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
@@ -424,5 +473,95 @@ mod tests {
         assert_eq!(outcome.relationships.len(), 2);
         assert_eq!(outcome.relationships[0].source.0, "node:apple");
         assert_eq!(outcome.relationships[1].target.0, "node:trees");
+    }
+
+    #[test]
+    fn partitions_long_document_into_multiple_chunks() {
+        let extractor = ParallelChunkExtractor::new(
+            IngestConfig {
+                tokenizer_name: String::from("test-wordlevel"),
+                max_chunk_tokens: 12,
+            },
+            MaxConcurrency(1),
+            FakeSchemaLlmClient,
+            &StaticTokenizerSource::new(build_test_tokenizer()),
+        )
+        .expect("extractor");
+        let document = Document {
+            id: DocumentId(String::from("stdin-document")),
+            text: NonEmptyString(String::from(
+                "An apple is a red fruit that grows on trees.\n\nAn apple is a red fruit that grows on trees.",
+            )),
+        };
+
+        let chunks = extractor.partition(&document).expect("chunks");
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|chunk| chunk.token_count.0 <= 12));
+        assert_eq!(
+            chunks[0].text.0,
+            "An apple is a red fruit that grows on trees."
+        );
+        assert_eq!(
+            chunks[1].text.0,
+            "An apple is a red fruit that grows on trees."
+        );
+    }
+
+    #[test]
+    fn fails_fast_when_tokenizer_cannot_be_loaded() {
+        struct BrokenTokenizerSource;
+
+        impl crate::adapters::TokenizerSource for BrokenTokenizerSource {
+            fn load(
+                &self,
+                _tokenizer_name: &str,
+            ) -> Result<Tokenizer, crate::application::AppError> {
+                Err(crate::application::AppError::LoadTokenizer)
+            }
+        }
+
+        let result = ParallelChunkExtractor::new(
+            IngestConfig {
+                tokenizer_name: String::from("missing-tokenizer"),
+                max_chunk_tokens: 8,
+            },
+            MaxConcurrency(1),
+            FakeSchemaLlmClient,
+            &BrokenTokenizerSource,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::application::AppError::LoadTokenizer)
+        ));
+    }
+
+    fn build_test_tokenizer() -> Tokenizer {
+        let vocab = [
+            ("[UNK]".to_owned(), 0),
+            ("an".to_owned(), 1),
+            ("apple".to_owned(), 2),
+            ("is".to_owned(), 3),
+            ("a".to_owned(), 4),
+            ("red".to_owned(), 5),
+            ("fruit".to_owned(), 6),
+            ("that".to_owned(), 7),
+            ("grows".to_owned(), 8),
+            ("on".to_owned(), 9),
+            ("trees".to_owned(), 10),
+            (".".to_owned(), 11),
+        ]
+        .into_iter()
+        .collect();
+
+        let model = WordLevel::builder()
+            .vocab(vocab)
+            .unk_token("[UNK]".into())
+            .build()
+            .expect("word level model");
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(Whitespace));
+        tokenizer
     }
 }

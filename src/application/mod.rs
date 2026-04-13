@@ -4,4 +4,4 @@ mod types;
 
 pub(crate) use error::AppError;
 pub(crate) use ingest_document::IngestDocumentService;
-pub(crate) use types::{Chunk, ExtractionOutcome, MaxConcurrency};
+pub(crate) use types::{Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency};

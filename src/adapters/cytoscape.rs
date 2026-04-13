@@ -109,6 +109,12 @@ fn slugify(value: &str) -> String {
     value
         .to_lowercase()
         .chars()
-        .map(|char| if char.is_ascii_alphanumeric() { char } else { '-' })
+        .map(|char| {
+            if char.is_ascii_alphanumeric() {
+                char
+            } else {
+                '-'
+            }
+        })
         .collect()
 }

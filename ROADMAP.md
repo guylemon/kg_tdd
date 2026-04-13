@@ -1,0 +1,151 @@
+# Roadmap Recommendation for the CLI Knowledge-Graph Product
+
+## Summary
+
+This project should be treated as a standalone CLI that ingests a single document and produces a static graph artifact bundle:
+
+- `graph.json`
+- `index.html`
+- local `cytoscape.min.js`
+
+The current repo proves a narrow vertical slice, but the product is still incomplete in several important areas beyond provider integration and stronger graph semantics.
+
+The roadmap should expand across these five tracks:
+
+1. CLI productization and artifact generation
+2. Extraction/provider integration
+3. Graph semantics and consolidation quality
+4. Reliability, evaluation, and observability
+5. Input robustness and format support
+
+The main recommendation is to sequence reliability and evaluation before broad feature expansion. Without that, provider and graph-semantics work will be difficult to compare, debug, and improve safely.
+
+## Milestone 1: CLI Product Completion
+
+- Turn the current prototype into a real CLI with explicit arguments for input path, output directory, tokenizer settings, and provider selection mode.
+- Replace the current `stdin -> stdout` only flow with artifact generation:
+  - `graph.json`
+  - `index.html`
+  - local `cytoscape.min.js`
+- Keep the HTML page build-free and static. The page should load local JS and local JSON only.
+- Add clear failure messages and exit codes for invalid input, tokenizer load failure, extraction failure, and output write failure.
+- Keep single-document workflow as the primary path.
+
+Why this matters:
+The project currently has no finished user-facing product surface. Even with providers and better graph semantics, there is still no complete CLI artifact workflow.
+
+## Milestone 2: Provider Integration Layer
+
+- Replace `FakeSchemaLlmClient` with real provider adapters behind the existing schema client boundary.
+- Add provider configuration and secrets handling for the CLI.
+- Define stable structured extraction schemas for:
+  - entity extraction
+  - relationship extraction
+  - evidence/citation extraction
+- Preserve the fake client as a deterministic test fixture path.
+- Add provider retries, timeout handling, and per-call error classification.
+
+Why this matters:
+Provider work needs to include deterministic fixture parity, config handling, and operational error behavior, not just raw API calls.
+
+## Milestone 3: Graph Semantics and Consolidation
+
+- Replace current minimal dedupe by raw entity name with stronger node identity rules.
+- Add normalization and alias handling for common variants.
+- Revisit relationship consolidation so edges are not keyed only by `(source, target)` when relationship type or meaning differs.
+- Strengthen evidence handling:
+  - citation provenance
+  - epistemic status policy
+  - duplicate evidence merging
+- Make node and edge IDs domain-derived and stable under repeated runs.
+
+Why this matters:
+“Stronger semantics” should be split into explicit subproblems: identity, normalization, and evidence policy.
+
+## Milestone 4: Reliability and Evaluation
+
+- Add gold-style fixture documents and expected graph outputs.
+- Introduce evaluation harnesses for:
+  - extraction correctness
+  - graph consolidation correctness
+  - end-to-end regression detection
+- Add traceable intermediate artifacts for debugging:
+  - chunk list
+  - raw provider responses
+  - extracted mentions before consolidation
+- Add structured logging and run metadata.
+- Add deterministic test coverage for failure paths, not only happy paths.
+
+Why this matters:
+The project can run, but it cannot yet measure quality or safely evolve.
+
+## Milestone 5: Input and Ingestion Robustness
+
+- Improve document identity beyond the current placeholder `stdin-document`.
+- Add real file-based input handling and path-based document metadata.
+- Support larger and noisier real-world text inputs.
+- Add configurable chunking behavior beyond the current fixed-token default if needed.
+- Decide how to treat unsupported or partial extraction results from individual chunks.
+
+Why this matters:
+The current IO layer is still prototype-level. Even with a provider integrated, ingest robustness is not product-ready.
+
+## Milestone 6: Static Viewer Quality
+
+- Add the actual static HTML viewer and package layout.
+- Keep viewer logic intentionally simple:
+  - load `graph.json`
+  - initialize Cytoscape
+  - basic readable styling
+  - click-to-inspect node and edge metadata
+- Ensure the generated directory can be served directly with `python -m http.server`.
+- Treat visualization as a consumer of the graph artifact, not as a second graph model.
+
+Why this matters:
+The final product is not just “graph JSON exists”; it is “a person can open a static page and inspect the graph.”
+
+## Important Interface and Type Changes
+
+- Add a real CLI argument and config model for:
+  - input document path
+  - output directory
+  - tokenizer name
+  - max chunk tokens
+  - provider mode or fixture mode
+- Introduce artifact-oriented output interfaces instead of only writing one JSON string to stdout.
+- Extend `AppError` into user-meaningful error categories rather than a mostly coarse internal enum.
+- Add explicit intermediate extraction types that can be serialized for debugging and evaluation.
+- Add a viewer artifact contract:
+  - expected `graph.json` shape
+  - expected static asset layout for `index.html` and `cytoscape.min.js`
+
+## Test Plan
+
+- CLI tests:
+  - valid input file produces an output directory with expected files
+  - invalid input path fails clearly
+  - provider config errors fail clearly
+- Artifact tests:
+  - generated `graph.json` is valid
+  - generated `index.html` references only local assets
+- Extraction tests:
+  - deterministic fixture path remains stable
+  - provider adapters map responses into internal extraction types correctly
+- Graph tests:
+  - alias and normalization scenarios
+  - relationship type collisions
+  - duplicate evidence handling
+- Evaluation tests:
+  - fixture documents with expected graph assertions
+  - regression cases across chunk boundaries
+- Viewer smoke test:
+  - static bundle is structurally complete and can be served locally
+
+## Assumptions and Defaults
+
+- Final product is a standalone CLI, not a reusable public library.
+- Primary workflow is single document to graph artifact.
+- Main output is a static HTML viewer backed by local `graph.json` and local `cytoscape.min.js`.
+- Reliability and evaluability are prioritized before broad format or output expansion.
+- Provider integration and graph semantics remain core roadmap items, but they should not be pursued without the supporting workstreams above.
+- Corpus ingestion, hosted service behavior, and advanced UX can remain later phases unless product goals change.
