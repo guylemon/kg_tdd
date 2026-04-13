@@ -40,7 +40,9 @@ impl CliArgs {
                 }
                 "--provider-mode" => {
                     let mode =
-                        next_string_value("--provider-mode", args.next()).and_then(parse_mode)?;
+                        next_string_value("--provider-mode", args.next()).and_then(|raw| {
+                            parse_mode(&raw)
+                        })?;
                     set_parsed_flag("--provider-mode", &mut provider_mode, mode)?;
                 }
                 "--provider-base-url" => {
@@ -164,8 +166,8 @@ fn next_string_value(flag: &str, value: Option<OsString>) -> Result<String, AppE
         .ok_or_else(|| AppError::usage(format!("missing value for {flag}\n\n{}", usage())))
 }
 
-fn parse_mode(raw: String) -> Result<ProviderMode, AppError> {
-    match raw.as_str() {
+fn parse_mode(raw: &str) -> Result<ProviderMode, AppError> {
+    match raw {
         "fixture" => Ok(ProviderMode::Fixture),
         "openai-compatible" => Ok(ProviderMode::OpenAiCompatible),
         _ => Err(AppError::usage(format!(

@@ -122,7 +122,7 @@ impl OpenAiCompatibleSchemaLlmClient {
 
         Ok(Self {
             agent: agent_config.into(),
-            base_url: trim_trailing_slash(base_url),
+            base_url: trim_trailing_slash(&base_url),
             model,
             api_key,
         })
@@ -621,7 +621,7 @@ where
     })
 }
 
-fn trim_trailing_slash(url: String) -> String {
+fn trim_trailing_slash(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
 }
 
@@ -637,7 +637,7 @@ fn validate_base_url(base_url: &str) -> Result<(), AppError> {
 fn classify_transport_error(error: ureq::Error, endpoint: &str) -> AppError {
     match error {
         ureq::Error::Timeout(timeout) => {
-            AppError::provider_timeout(format!("{} while calling {}", timeout, endpoint))
+            AppError::provider_timeout(format!("{timeout} while calling {endpoint}"))
         }
         ureq::Error::StatusCode(code) => classify_status_code(code, endpoint),
         other => AppError::provider_transport(format!("{other} while calling {endpoint}")),
