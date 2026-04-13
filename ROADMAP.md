@@ -55,17 +55,22 @@ The generated directory is now directly inspectable as a static graph viewer rat
 
 ## Milestone 2: Provider Integration Layer
 
-- Replace `FakeSchemaLlmClient` with real provider adapters behind the existing schema client boundary.
-- Add provider configuration and secrets handling for the CLI.
-- Define stable structured extraction schemas for:
+Status: complete as of April 13, 2026.
+
+Completed in this milestone:
+
+- Added a real provider adapter behind the existing schema client boundary.
+- Added provider configuration and secrets handling for the CLI.
+- Defined stable structured extraction schemas for:
   - entity extraction
   - relationship extraction
   - evidence/citation extraction
-- Preserve the fake client as a deterministic test fixture path.
-- Add provider retries, timeout handling, and per-call error classification.
+- Preserved the fake client as a deterministic test fixture path.
+- Added provider retries, timeout handling, and per-call error classification.
+- Added provider debugging logs for live schema-mismatch diagnosis, with raw prompt/response logging gated behind an explicit opt-in environment flag.
 
 Why this matters:
-Provider work needs to include deterministic fixture parity, config handling, and operational error behavior, not just raw API calls.
+Provider work now includes deterministic fixture parity, config handling, and operational error behavior rather than only raw API calls, so the provider integration layer is in place for subsequent quality and semantics work.
 
 ## Milestone 3: Graph Semantics and Consolidation
 
