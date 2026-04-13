@@ -262,20 +262,30 @@ struct ExtractionTask {
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RelationshipExtract {
     source: ExtractedEntity,
     target: ExtractedEntity,
     relationship_type: RelationshipType,
     description: String,
-    fact: String,
+    evidence: Vec<ExtractedEvidence>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct AiRelationshipExtractionResponse {
     relationships: Vec<RelationshipExtract>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExtractedEvidence {
+    fact: String,
+    citation_text: String,
+}
+
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ExtractedEntity {
     name: String,
     entity_type: EntityType,
@@ -283,6 +293,7 @@ struct ExtractedEntity {
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct AiExtractionResponse {
     entities: Vec<ExtractedEntity>,
 }
@@ -412,21 +423,47 @@ where
     let response = llm_client
         .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
 
+    let source_text = deannotate_text(&text_unit.text.0);
     Ok(response
         .relationships
         .into_iter()
-        .map(|relationship| RelationshipMention {
-            source: entity_name_to_node_id(&relationship.source.name),
-            target: entity_name_to_node_id(&relationship.target.name),
-            description: EdgeDescription(relationship.description),
-            evidence: vec![FactualClaim {
-                fact: Fact(relationship.fact),
-                citation: text_unit.clone(),
-                status: EpistemicStatus::Probable,
-            }],
-            relationship_type: relationship.relationship_type,
+        .filter_map(|relationship| {
+            let evidence = relationship
+                .evidence
+                .into_iter()
+                .filter_map(|item| map_evidence_item(item, text_unit, &source_text))
+                .collect::<Vec<_>>();
+
+            if evidence.is_empty() {
+                return None;
+            }
+
+            Some(RelationshipMention {
+                source: entity_name_to_node_id(&relationship.source.name),
+                target: entity_name_to_node_id(&relationship.target.name),
+                description: EdgeDescription(relationship.description),
+                evidence,
+                relationship_type: relationship.relationship_type,
+            })
         })
         .collect())
+}
+
+fn map_evidence_item(
+    item: ExtractedEvidence,
+    text_unit: &TextUnit,
+    source_text: &str,
+) -> Option<FactualClaim> {
+    if !source_text.contains(&item.citation_text) {
+        return None;
+    }
+
+    Some(FactualClaim {
+        fact: Fact(item.fact),
+        citation_text: item.citation_text,
+        citation: text_unit.clone(),
+        status: EpistemicStatus::Probable,
+    })
 }
 
 fn extract_entities(text_unit: &TextUnit, response: AiExtractionResponse) -> Vec<EntityMention> {
@@ -471,6 +508,22 @@ fn annotate_text(text: String, response: &AiExtractionResponse) -> String {
     }
 
     result
+}
+
+fn deannotate_text(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut in_tag = false;
+
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => plain.push(ch),
+            _ => {}
+        }
+    }
+
+    plain
 }
 
 fn entity_name_to_node_id(name: &str) -> NodeId {
@@ -540,7 +593,12 @@ fn fixture_relationships(user_prompt: &str) -> serde_json::Value {
                     },
                     "relationship_type": "IsA",
                     "description": "apple is a fruit",
-                    "fact": "An apple is a red fruit"
+                    "evidence": [
+                        {
+                            "fact": "An apple is a red fruit",
+                            "citation_text": "apple is a red fruit"
+                        }
+                    ]
                 },
                 {
                     "source": {
@@ -555,7 +613,12 @@ fn fixture_relationships(user_prompt: &str) -> serde_json::Value {
                     },
                     "relationship_type": "GrowsOn",
                     "description": "apple grows on trees",
-                    "fact": "apple grows on trees"
+                    "evidence": [
+                        {
+                            "fact": "apple grows on trees",
+                            "citation_text": "grows on trees"
+                        }
+                    ]
                 }
             ]
         })
@@ -680,9 +743,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    use schemars::JsonSchema;
+
     use super::{
-        ConfiguredSchemaLlmClient, FakeSchemaLlmClient, ParallelChunkExtractor, build_chat_request,
-        classify_status_code, extract_chunk, retry_operation, validate_base_url,
+        ConfiguredSchemaLlmClient, FakeSchemaLlmClient, ParallelChunkExtractor, SchemaLlmClient,
+        build_chat_request, classify_status_code, extract_chunk, retry_operation,
+        validate_base_url,
     };
     use crate::adapters::StaticTokenizerSource;
     use crate::application::{
@@ -847,6 +913,23 @@ mod tests {
     }
 
     #[test]
+    fn relationship_schema_includes_closed_nested_evidence_items() {
+        let request = build_chat_request::<super::AiRelationshipExtractionResponse>(
+            "llama3.2",
+            NonEmptyString(String::from("system prompt")),
+            NonEmptyString(String::from("user prompt")),
+        )
+        .expect("request");
+        let request = serde_json::to_value(request).expect("request json");
+        let schema = &request["response_format"]["schema"];
+        let schema_text = schema.to_string();
+
+        assert!(schema_text.contains("\"citation_text\""));
+        assert!(schema_text.contains("\"fact\""));
+        assert!(schema_text.contains("\"additionalProperties\":false"));
+    }
+
+    #[test]
     fn openai_compatible_client_retries_transient_failures() {
         let mut attempts = 0;
         let result = retry_operation::<(), _>(2, || {
@@ -875,6 +958,165 @@ mod tests {
 
         assert!(matches!(result, Err(AppError::ProviderAuthentication(_))));
         assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn drops_invalid_evidence_items_and_keeps_relationship_with_valid_quote() {
+        struct EvidenceClient;
+
+        impl SchemaLlmClient for EvidenceClient {
+            fn generate_with_schema<T>(
+                &self,
+                _sys_prompt: NonEmptyString,
+                _user_prompt: NonEmptyString,
+            ) -> Result<T, AppError>
+            where
+                T: serde::de::DeserializeOwned + JsonSchema + 'static,
+            {
+                let payload = if std::any::TypeId::of::<T>()
+                    == std::any::TypeId::of::<super::AiExtractionResponse>()
+                {
+                    serde_json::json!({
+                        "entities": [
+                            {
+                                "name": "apple",
+                                "entity_type": "Lifeform",
+                                "description": "A red fruit"
+                            },
+                            {
+                                "name": "fruit",
+                                "entity_type": "Concept",
+                                "description": "An edible plant structure"
+                            }
+                        ]
+                    })
+                } else {
+                    serde_json::json!({
+                        "relationships": [
+                            {
+                                "source": {
+                                    "name": "apple",
+                                    "entity_type": "Lifeform",
+                                    "description": "A red fruit"
+                                },
+                                "target": {
+                                    "name": "fruit",
+                                    "entity_type": "Concept",
+                                    "description": "An edible plant structure"
+                                },
+                                "relationship_type": "IsA",
+                                "description": "apple is a fruit",
+                                "evidence": [
+                                    {
+                                        "fact": "An apple is a red fruit",
+                                        "citation_text": "apple is a red fruit"
+                                    },
+                                    {
+                                        "fact": "Not grounded",
+                                        "citation_text": "pear is blue"
+                                    }
+                                ]
+                            }
+                        ]
+                    })
+                };
+
+                serde_json::from_value(payload)
+                    .map_err(|_| AppError::provider_response("test payload invalid"))
+            }
+        }
+
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: crate::domain::TokenCount(10),
+            },
+            &EvidenceClient,
+        )
+        .expect("outcome");
+
+        assert_eq!(outcome.relationships.len(), 1);
+        assert_eq!(outcome.relationships[0].evidence.len(), 1);
+        assert_eq!(
+            outcome.relationships[0].evidence[0].citation_text,
+            "apple is a red fruit"
+        );
+    }
+
+    #[test]
+    fn drops_relationship_when_all_evidence_items_are_invalid() {
+        struct InvalidEvidenceClient;
+
+        impl SchemaLlmClient for InvalidEvidenceClient {
+            fn generate_with_schema<T>(
+                &self,
+                _sys_prompt: NonEmptyString,
+                _user_prompt: NonEmptyString,
+            ) -> Result<T, AppError>
+            where
+                T: serde::de::DeserializeOwned + JsonSchema + 'static,
+            {
+                let payload = if std::any::TypeId::of::<T>()
+                    == std::any::TypeId::of::<super::AiExtractionResponse>()
+                {
+                    serde_json::json!({
+                        "entities": [
+                            {
+                                "name": "apple",
+                                "entity_type": "Lifeform",
+                                "description": "A red fruit"
+                            },
+                            {
+                                "name": "fruit",
+                                "entity_type": "Concept",
+                                "description": "An edible plant structure"
+                            }
+                        ]
+                    })
+                } else {
+                    serde_json::json!({
+                        "relationships": [
+                            {
+                                "source": {
+                                    "name": "apple",
+                                    "entity_type": "Lifeform",
+                                    "description": "A red fruit"
+                                },
+                                "target": {
+                                    "name": "fruit",
+                                    "entity_type": "Concept",
+                                    "description": "An edible plant structure"
+                                },
+                                "relationship_type": "IsA",
+                                "description": "apple is a fruit",
+                                "evidence": [
+                                    {
+                                        "fact": "Not grounded",
+                                        "citation_text": "pear is blue"
+                                    }
+                                ]
+                            }
+                        ]
+                    })
+                };
+
+                serde_json::from_value(payload)
+                    .map_err(|_| AppError::provider_response("test payload invalid"))
+            }
+        }
+
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: crate::domain::TokenCount(10),
+            },
+            &InvalidEvidenceClient,
+        )
+        .expect("outcome");
+
+        assert!(outcome.relationships.is_empty());
     }
 
     fn build_test_tokenizer() -> Tokenizer {
