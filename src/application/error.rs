@@ -1,8 +1,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::domain::Todo;
-
 #[derive(Debug)]
 pub(crate) enum AppError {
     Usage(String),
@@ -10,17 +8,15 @@ pub(crate) enum AppError {
     ReadInput { path: PathBuf },
     EmptyInput { path: PathBuf },
     LoadTokenizer(String),
+    InvalidProviderConfig(String),
+    ProviderTransport(String),
+    ProviderTimeout(String),
+    ProviderAuthentication(String),
+    ProviderResponse(String),
     ExtractChunk,
     ProjectGraph,
     CreateOutputDir { path: PathBuf },
     WriteOutput { path: PathBuf },
-    Internal,
-}
-
-impl From<Todo> for AppError {
-    fn from(_: Todo) -> Self {
-        Self::Internal
-    }
 }
 
 impl AppError {
@@ -30,10 +26,14 @@ impl AppError {
             Self::InvalidInputPath(_) => 3,
             Self::ReadInput { .. } | Self::EmptyInput { .. } => 4,
             Self::LoadTokenizer(_) => 5,
-            Self::ExtractChunk => 6,
-            Self::ProjectGraph => 7,
-            Self::CreateOutputDir { .. } | Self::WriteOutput { .. } => 8,
-            Self::Internal => 9,
+            Self::InvalidProviderConfig(_) => 6,
+            Self::ProviderTransport(_)
+            | Self::ProviderTimeout(_)
+            | Self::ProviderAuthentication(_)
+            | Self::ProviderResponse(_)
+            | Self::ExtractChunk => 7,
+            Self::ProjectGraph => 8,
+            Self::CreateOutputDir { .. } | Self::WriteOutput { .. } => 9,
         }
     }
 
@@ -55,6 +55,26 @@ impl AppError {
 
     pub(crate) fn load_tokenizer(name: impl Into<String>) -> Self {
         Self::LoadTokenizer(name.into())
+    }
+
+    pub(crate) fn invalid_provider_config(message: impl Into<String>) -> Self {
+        Self::InvalidProviderConfig(message.into())
+    }
+
+    pub(crate) fn provider_transport(message: impl Into<String>) -> Self {
+        Self::ProviderTransport(message.into())
+    }
+
+    pub(crate) fn provider_timeout(message: impl Into<String>) -> Self {
+        Self::ProviderTimeout(message.into())
+    }
+
+    pub(crate) fn provider_authentication(message: impl Into<String>) -> Self {
+        Self::ProviderAuthentication(message.into())
+    }
+
+    pub(crate) fn provider_response(message: impl Into<String>) -> Self {
+        Self::ProviderResponse(message.into())
     }
 
     pub(crate) fn create_output_dir(path: impl Into<PathBuf>) -> Self {
@@ -84,6 +104,19 @@ impl fmt::Display for AppError {
                 write!(f, "input file is empty: {}", display_path(path))
             }
             Self::LoadTokenizer(name) => write!(f, "failed to load tokenizer: {name}"),
+            Self::InvalidProviderConfig(message) => {
+                write!(f, "invalid provider configuration: {message}")
+            }
+            Self::ProviderTransport(message) => {
+                write!(f, "provider transport failure: {message}")
+            }
+            Self::ProviderTimeout(message) => write!(f, "provider timeout: {message}"),
+            Self::ProviderAuthentication(message) => {
+                write!(f, "provider authentication failure: {message}")
+            }
+            Self::ProviderResponse(message) => {
+                write!(f, "invalid provider response: {message}")
+            }
             Self::ExtractChunk => write!(f, "failed to extract entities or relationships"),
             Self::ProjectGraph => write!(f, "failed to serialize graph output"),
             Self::CreateOutputDir { path } => {
@@ -96,7 +129,6 @@ impl fmt::Display for AppError {
             Self::WriteOutput { path } => {
                 write!(f, "failed to write output file: {}", display_path(path))
             }
-            Self::Internal => write!(f, "internal application error"),
         }
     }
 }

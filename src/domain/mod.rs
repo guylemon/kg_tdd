@@ -20,7 +20,6 @@ mod non_empty_string;
 mod relationship_mention;
 mod relationship_type;
 mod text_unit;
-mod todo;
 mod token_count;
 
 pub(crate) use annotated_text::AnnotatedText;
@@ -45,5 +44,4 @@ pub use non_empty_string::NonEmptyString;
 pub(crate) use relationship_mention::RelationshipMention;
 pub(crate) use relationship_type::RelationshipType;
 pub(crate) use text_unit::TextUnit;
-pub use todo::Todo;
 pub(crate) use token_count::TokenCount;

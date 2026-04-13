@@ -7,7 +7,9 @@ mod tokenizer;
 pub(crate) use cli::CliArgs;
 pub(crate) use cytoscape::CytoscapeJsonProjector;
 pub(crate) use io::{FileDocumentSource, FileGraphArtifactSink};
-pub(crate) use llm::{FakeSchemaLlmClient, ParallelChunkExtractor, SchemaLlmClient};
+pub(crate) use llm::{
+    ConfiguredSchemaLlmClient, FakeSchemaLlmClient, ParallelChunkExtractor, SchemaLlmClient,
+};
 pub(crate) use tokenizer::{HubTokenizerSource, TokenizerSource};
 
 #[cfg(test)]

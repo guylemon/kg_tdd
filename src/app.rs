@@ -65,7 +65,9 @@ mod tests {
 
     use super::App;
     use crate::adapters::{FakeSchemaLlmClient, FileGraphArtifactSink, StaticTokenizerSource};
-    use crate::application::{AppError, IngestConfig, MaxConcurrency, RunConfig};
+    use crate::application::{
+        AppError, IngestConfig, MaxConcurrency, ProviderConfig, RunConfig,
+    };
     use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
     use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -111,6 +113,7 @@ mod tests {
                 input_path: PathBuf::from("fixtures/input.txt"),
                 output_dir: PathBuf::from("out"),
                 max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
             },
             StubDocumentSource {
                 document: Document {
@@ -162,6 +165,7 @@ mod tests {
                 input_path: PathBuf::from("fixtures/input.txt"),
                 output_dir: PathBuf::from("out"),
                 max_concurrency: MaxConcurrency(2),
+                provider: ProviderConfig::default(),
             },
             StubDocumentSource {
                 document: Document {
@@ -196,6 +200,7 @@ mod tests {
                 input_path: PathBuf::from("fixtures/input.txt"),
                 output_dir: output_dir.clone(),
                 max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
             },
             StubDocumentSource {
                 document: Document {
