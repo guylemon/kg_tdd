@@ -1,0 +1,48 @@
+{
+  "nodes": [
+    {
+      "id": "node:lifeform:mistletoe",
+      "name": "mistletoe",
+      "entity_type": "Lifeform",
+      "aliases": []
+    },
+    {
+      "id": "node:lifeform:plant",
+      "name": "plant",
+      "entity_type": "Lifeform",
+      "aliases": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:node:lifeform:mistletoe->node:lifeform:plant:is-a",
+      "source": "node:lifeform:mistletoe",
+      "target": "node:lifeform:plant",
+      "relationship_type": "IsA",
+      "description": "mistletoe is a plant",
+      "weight": 1,
+      "evidence": [
+        {
+          "fact": "Mistletoe is a plant",
+          "citation_text": "Mistletoe is a plant",
+          "status": "Probable"
+        }
+      ]
+    },
+    {
+      "id": "edge:node:lifeform:mistletoe->node:lifeform:plant:grows-on",
+      "source": "node:lifeform:mistletoe",
+      "target": "node:lifeform:plant",
+      "relationship_type": "GrowsOn",
+      "description": "mistletoe grows on plant",
+      "weight": 1,
+      "evidence": [
+        {
+          "fact": "Mistletoe grows on a plant",
+          "citation_text": "grows on a plant",
+          "status": "Probable"
+        }
+      ]
+    }
+  ]
+}

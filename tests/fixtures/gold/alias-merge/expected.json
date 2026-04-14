@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "id": "node:organization:at-and-t-inc",
+      "name": "AT&T Incorporated",
+      "entity_type": "Organization",
+      "aliases": [
+        "AT and T Inc."
+      ]
+    },
+    {
+      "id": "node:organization:acme-co",
+      "name": "Acme Company",
+      "entity_type": "Organization",
+      "aliases": [
+        "Acme Co."
+      ]
+    }
+  ],
+  "edges": []
+}

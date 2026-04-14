@@ -2,6 +2,8 @@ mod adapters;
 mod app;
 mod application;
 mod domain;
+#[cfg(test)]
+mod gold_fixtures;
 mod ports;
 
 use std::process;

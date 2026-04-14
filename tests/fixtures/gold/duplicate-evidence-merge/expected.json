@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {
+      "id": "node:lifeform:apple",
+      "name": "apple",
+      "entity_type": "Lifeform",
+      "aliases": []
+    },
+    {
+      "id": "node:concept:fruit",
+      "name": "fruit",
+      "entity_type": "Concept",
+      "aliases": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:node:lifeform:apple->node:concept:fruit:is-a",
+      "source": "node:lifeform:apple",
+      "target": "node:concept:fruit",
+      "relationship_type": "IsA",
+      "description": "apple is a fruit",
+      "weight": 2,
+      "evidence": [
+        {
+          "fact": "An apple is a fruit",
+          "citation_text": "apple is a fruit",
+          "status": "Probable"
+        }
+      ]
+    }
+  ]
+}

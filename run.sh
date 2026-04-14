@@ -1,1 +1,1 @@
-cargo run -- --input fixtures/seed.txt --output-dir out
+cargo run -- --input tests/fixtures/gold/seed/input.txt --output-dir out

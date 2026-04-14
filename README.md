@@ -19,7 +19,7 @@ This output layout is the current artifact contract for the CLI.
 Generate the artifact bundle:
 
 ```bash
-cargo run -- --input fixtures/seed.txt --output-dir out
+cargo run -- --input tests/fixtures/gold/seed/input.txt --output-dir out
 ```
 
 Or use the convenience script:
@@ -79,7 +79,7 @@ Then run:
 
 ```bash
 cargo run -- \
-  --input fixtures/seed.txt \
+  --input tests/fixtures/gold/seed/input.txt \
   --output-dir out \
   --provider-mode openai-compatible \
   --provider-base-url http://localhost:8080 \
@@ -99,25 +99,25 @@ The CLI uses `env_logger`, so log output is controlled through `RUST_LOG` and is
 Enable normal debug logging:
 
 ```bash
-RUST_LOG=debug cargo run -- --input fixtures/seed.txt --output-dir out
+RUST_LOG=debug cargo run -- --input tests/fixtures/gold/seed/input.txt --output-dir out
 ```
 
 Write debug logs to a file:
 
 ```bash
-RUST_LOG=debug cargo run -- --input fixtures/seed.txt --output-dir out 2>kg_tdd.log
+RUST_LOG=debug cargo run -- --input tests/fixtures/gold/seed/input.txt --output-dir out 2>kg_tdd.log
 ```
 
 For live provider debugging, full raw prompts and raw provider responses are available behind an explicit opt-in flag:
 
 ```bash
-RUST_LOG=debug KG_DEBUG_RAW_PROVIDER=1 cargo run -- --input fixtures/seed.txt --output-dir out
+RUST_LOG=debug KG_DEBUG_RAW_PROVIDER=1 cargo run -- --input tests/fixtures/gold/seed/input.txt --output-dir out
 ```
 
 You can combine that with log redirection:
 
 ```bash
-RUST_LOG=debug KG_DEBUG_RAW_PROVIDER=1 cargo run -- --input fixtures/seed.txt --output-dir out 2>kg_tdd.log
+RUST_LOG=debug KG_DEBUG_RAW_PROVIDER=1 cargo run -- --input tests/fixtures/gold/seed/input.txt --output-dir out 2>kg_tdd.log
 ```
 
 `KG_DEBUG_RAW_PROVIDER=1` is intended for local diagnosis of schema and parsing failures. It may log full prompt and response content, so avoid using it with sensitive inputs unless that is acceptable for your environment.
@@ -170,6 +170,8 @@ Current test coverage includes:
 - file-based document input
 - graph artifact bundle generation
 - end-to-end application flow
+
+Gold fixtures for reliability and evaluation live under [tests/fixtures/gold](/home/eci/dev/kg_tdd/tests/fixtures/gold:1). Each scenario directory contains a curated `input.txt` plus a human-reviewed `expected.json` that captures canonical graph semantics rather than full viewer projection output.
 
 ## Project Status
 

@@ -1,0 +1,54 @@
+{
+  "nodes": [
+    {
+      "id": "node:lifeform:apple",
+      "name": "apple",
+      "entity_type": "Lifeform",
+      "aliases": []
+    },
+    {
+      "id": "node:concept:fruit",
+      "name": "fruit",
+      "entity_type": "Concept",
+      "aliases": []
+    },
+    {
+      "id": "node:lifeform:trees",
+      "name": "trees",
+      "entity_type": "Lifeform",
+      "aliases": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:node:lifeform:apple->node:concept:fruit:is-a",
+      "source": "node:lifeform:apple",
+      "target": "node:concept:fruit",
+      "relationship_type": "IsA",
+      "description": "apple is a fruit",
+      "weight": 1,
+      "evidence": [
+        {
+          "fact": "An apple is a red fruit",
+          "citation_text": "apple is a red fruit",
+          "status": "Probable"
+        }
+      ]
+    },
+    {
+      "id": "edge:node:lifeform:apple->node:lifeform:trees:grows-on",
+      "source": "node:lifeform:apple",
+      "target": "node:lifeform:trees",
+      "relationship_type": "GrowsOn",
+      "description": "apple grows on trees",
+      "weight": 1,
+      "evidence": [
+        {
+          "fact": "apple grows on trees",
+          "citation_text": "grows on trees",
+          "status": "Probable"
+        }
+      ]
+    }
+  ]
+}
