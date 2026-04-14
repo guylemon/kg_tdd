@@ -173,6 +173,37 @@ Current test coverage includes:
 
 Gold fixtures for reliability and evaluation live under [tests/fixtures/gold](/home/eci/dev/kg_tdd/tests/fixtures/gold:1). Each scenario directory contains a curated `input.txt` plus a human-reviewed `expected.json` that captures canonical graph semantics rather than full viewer projection output.
 
+## Gold Evaluation
+
+The real-provider gold evaluation harness is kept separate from default unit tests.
+
+Default tests:
+
+```bash
+cargo test
+```
+
+Opt-in evaluation target:
+
+```bash
+cargo test --test eval_gold -- --ignored
+```
+
+Required evaluation environment variables:
+
+```bash
+export KG_EVAL_PROVIDER_BASE_URL=http://localhost:8080
+export KG_EVAL_PROVIDER_MODEL=llama3.2
+```
+
+Optional if your provider requires auth:
+
+```bash
+export KG_EVAL_PROVIDER_API_KEY=your-token
+```
+
+Each gold fixture may also include `expected_extraction.json` for pre-consolidation expectations and an optional `config.json` for scenario-specific chunking.
+
 ## Project Status
 
 This repository is being developed incrementally against [ROADMAP.md](/home/eci/dev/kg_tdd/ROADMAP.md:1).

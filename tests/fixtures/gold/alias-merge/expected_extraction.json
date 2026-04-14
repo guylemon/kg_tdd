@@ -1,0 +1,25 @@
+{
+  "entities": [
+    {
+      "name": "AT&T Incorporated",
+      "entity_type": "Organization",
+      "description": "Organization"
+    },
+    {
+      "name": "Acme Company",
+      "entity_type": "Organization",
+      "description": "Organization"
+    },
+    {
+      "name": "AT and T Inc.",
+      "entity_type": "Organization",
+      "description": "Organization"
+    },
+    {
+      "name": "Acme Co.",
+      "entity_type": "Organization",
+      "description": "Organization"
+    }
+  ],
+  "relationships": []
+}

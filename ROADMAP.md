@@ -90,11 +90,11 @@ Why this matters:
 
 ## Milestone 4: Reliability and Evaluation
 
-- Add gold-style fixture documents and expected graph outputs.
-- Introduce evaluation harnesses for:
-  - extraction correctness
-  - graph consolidation correctness
-  - end-to-end regression detection
+- [x] Add gold-style fixture documents and expected graph outputs.
+- [ ] Introduce evaluation harnesses for:
+  - [ ] extraction correctness
+  - [ ] graph consolidation correctness
+  - [ ] end-to-end regression detection
 - Add traceable intermediate artifacts for debugging:
   - chunk list
   - raw provider responses

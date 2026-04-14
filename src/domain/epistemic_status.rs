@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Represents the degree of epistemic certainty for a given claim, given the context.
 // TODO remove unused allow rule
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) enum EpistemicStatus {
     /// An arbitrary claim has no perceptual or conceptual evidence. It is neither true or false
     /// because it is outside of cognition. The arbitrary is distinct from the possible because the

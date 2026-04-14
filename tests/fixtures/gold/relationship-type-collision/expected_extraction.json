@@ -1,0 +1,42 @@
+{
+  "entities": [
+    {
+      "name": "mistletoe",
+      "entity_type": "Lifeform",
+      "description": "Plant"
+    },
+    {
+      "name": "plant",
+      "entity_type": "Lifeform",
+      "description": "Plant"
+    }
+  ],
+  "relationships": [
+    {
+      "source": "node:lifeform:mistletoe",
+      "target": "node:lifeform:plant",
+      "relationship_type": "IsA",
+      "description": "mistletoe is a plant",
+      "evidence": [
+        {
+          "fact": "Mistletoe is a plant",
+          "citation_text": "Mistletoe is a plant",
+          "status": "Probable"
+        }
+      ]
+    },
+    {
+      "source": "node:lifeform:mistletoe",
+      "target": "node:lifeform:plant",
+      "relationship_type": "GrowsOn",
+      "description": "mistletoe grows on plant",
+      "evidence": [
+        {
+          "fact": "Mistletoe grows on a plant",
+          "citation_text": "grows on a plant",
+          "status": "Probable"
+        }
+      ]
+    }
+  ]
+}
