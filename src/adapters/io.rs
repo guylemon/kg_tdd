@@ -5,7 +5,7 @@ use std::path::Path;
 
 use log::debug;
 
-use crate::application::AppError;
+use crate::application::{AppError, IngestionTrace};
 use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -60,6 +60,35 @@ impl GraphArtifactSink for FileGraphArtifactSink {
 
         Ok(())
     }
+
+    fn write_debug_artifacts(
+        &self,
+        output_dir: &Path,
+        trace: &IngestionTrace,
+    ) -> Result<(), AppError> {
+        let debug_dir = output_dir.join("debug");
+        fs::create_dir_all(&debug_dir).map_err(|_| AppError::create_output_dir(&debug_dir))?;
+
+        write_json_file(&debug_dir.join("chunk-list.json"), &trace.chunks)?;
+        write_json_file(
+            &debug_dir.join("raw-provider-responses.json"),
+            &trace.provider_responses,
+        )?;
+        write_json_file(
+            &debug_dir.join("extracted-mentions.json"),
+            &trace.extracted_mentions,
+        )?;
+
+        Ok(())
+    }
+}
+
+fn write_json_file<T>(path: &Path, value: &T) -> Result<(), AppError>
+where
+    T: serde::Serialize,
+{
+    let json = serde_json::to_string_pretty(value).map_err(|_| AppError::write_output(path))?;
+    fs::write(path, json).map_err(|_| AppError::write_output(path))
 }
 
 fn copy_viewer_asset(output_dir: &Path, file_name: &str) -> Result<(), AppError> {
@@ -127,6 +156,10 @@ mod tests {
 
     use super::{
         FileDocumentSource, FileGraphArtifactSink, document_id_from_path, viewer_asset_path,
+    };
+    use crate::application::{
+        ChunkExtractionTrace, ChunkTrace, EntityMentionTrace, EvidenceTrace, IngestionTrace,
+        ProviderResponseKind, ProviderResponseTrace, RelationshipMentionTrace,
     };
     use crate::domain::KnowledgeGraph;
     use crate::ports::{DocumentSource, GraphArtifactSink};
@@ -198,6 +231,40 @@ mod tests {
     }
 
     #[test]
+    fn writes_debug_trace_artifacts_under_debug_directory() {
+        let dir = temp_dir("write_debug");
+        let output_dir = dir.join("artifacts");
+
+        FileGraphArtifactSink
+            .write_debug_artifacts(&output_dir, &sample_trace())
+            .expect("write debug artifacts");
+
+        let debug_dir = output_dir.join("debug");
+        let chunks_path = debug_dir.join("chunk-list.json");
+        let responses_path = debug_dir.join("raw-provider-responses.json");
+        let mentions_path = debug_dir.join("extracted-mentions.json");
+
+        assert!(chunks_path.is_file());
+        assert!(responses_path.is_file());
+        assert!(mentions_path.is_file());
+        assert!(
+            fs::read_to_string(chunks_path)
+                .expect("chunks")
+                .contains("\"doc-1\"")
+        );
+        assert!(
+            fs::read_to_string(responses_path)
+                .expect("responses")
+                .contains("\"EntityExtraction\"")
+        );
+        assert!(
+            fs::read_to_string(mentions_path)
+                .expect("mentions")
+                .contains("\"Alice\"")
+        );
+    }
+
+    #[test]
     fn document_ids_are_stable_for_the_same_path() {
         let path = PathBuf::from("/tmp/Seed Document.txt");
 
@@ -215,5 +282,48 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kg_tdd_{label}_{unique}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    fn sample_trace() -> IngestionTrace {
+        IngestionTrace {
+            chunks: vec![ChunkTrace {
+                index: 0,
+                document_id: String::from("doc-1"),
+                text: String::from("Alice met Bob"),
+                token_count: 4,
+            }],
+            provider_responses: vec![ProviderResponseTrace {
+                chunk_index: 0,
+                kind: ProviderResponseKind::EntityExtraction,
+                raw_response: String::from("{\"entities\":[{\"name\":\"Alice\"}]}"),
+            }],
+            extracted_mentions: vec![ChunkExtractionTrace {
+                chunk_index: 0,
+                entities: vec![EntityMentionTrace {
+                    name: String::from("Alice"),
+                    entity_type: String::from("Person"),
+                    description: String::from("person"),
+                    source_document_id: String::from("doc-1"),
+                    source_text: String::from("<entity>Alice</entity> met <entity>Bob</entity>"),
+                    source_token_count: 8,
+                }],
+                relationships: vec![RelationshipMentionTrace {
+                    source: String::from("node:person:alice"),
+                    target: String::from("node:person:bob"),
+                    relationship_type: String::from("IsA"),
+                    description: String::from("knows"),
+                    evidence: vec![EvidenceTrace {
+                        fact: String::from("Alice met Bob"),
+                        citation_text: String::from("Alice met Bob"),
+                        status: String::from("Probable"),
+                        source_document_id: String::from("doc-1"),
+                        source_text: String::from(
+                            "<entity>Alice</entity> met <entity>Bob</entity>",
+                        ),
+                        source_token_count: 8,
+                    }],
+                }],
+            }],
+        }
     }
 }

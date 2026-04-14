@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::application::{AppError, Chunk, ExtractionOutcome};
+use crate::application::{AppError, Chunk, ExtractionOutcome, IngestionTrace};
 use crate::domain::{Document, KnowledgeGraph};
 
 pub(crate) trait ChunkExtractor {
@@ -17,4 +17,12 @@ pub(crate) trait DocumentSource {
 
 pub(crate) trait GraphArtifactSink {
     fn write_graph(&self, output_dir: &Path, graph: &KnowledgeGraph) -> Result<(), AppError>;
+
+    fn write_debug_artifacts(
+        &self,
+        _output_dir: &Path,
+        _trace: &IngestionTrace,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
 }

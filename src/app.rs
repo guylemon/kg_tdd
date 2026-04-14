@@ -65,15 +65,17 @@ where
             document.text.0.len()
         );
 
-        let knowledge_graph = service.execute(&document)?;
+        let ingest_result = service.execute_with_trace(&document)?;
         debug!(
             "ingestion complete: nodes={}, edges={}",
-            knowledge_graph.nodes.len(),
-            knowledge_graph.edges.len()
+            ingest_result.graph.nodes.len(),
+            ingest_result.graph.edges.len()
         );
 
         self.graph_sink
-            .write_graph(&self.config.output_dir, &knowledge_graph)?;
+            .write_graph(&self.config.output_dir, &ingest_result.graph)?;
+        self.graph_sink
+            .write_debug_artifacts(&self.config.output_dir, &ingest_result.trace)?;
         debug!(
             "wrote graph artifact bundle to {}",
             self.config.output_dir.display()
@@ -95,7 +97,9 @@ mod tests {
 
     use super::App;
     use crate::adapters::{FakeSchemaLlmClient, FileGraphArtifactSink, StaticTokenizerSource};
-    use crate::application::{AppError, IngestConfig, MaxConcurrency, ProviderConfig, RunConfig};
+    use crate::application::{
+        AppError, IngestConfig, IngestionTrace, MaxConcurrency, ProviderConfig, RunConfig,
+    };
     use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
     use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -116,6 +120,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingGraphSink {
         writes: std::sync::Mutex<Vec<(PathBuf, KnowledgeGraph)>>,
+        debug_writes: std::sync::Mutex<Vec<(PathBuf, IngestionTrace)>>,
     }
 
     impl GraphArtifactSink for &RecordingGraphSink {
@@ -124,6 +129,18 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .push((output_dir.to_path_buf(), graph.clone()));
+            Ok(())
+        }
+
+        fn write_debug_artifacts(
+            &self,
+            output_dir: &Path,
+            trace: &IngestionTrace,
+        ) -> Result<(), AppError> {
+            self.debug_writes
+                .lock()
+                .expect("lock")
+                .push((output_dir.to_path_buf(), trace.clone()));
             Ok(())
         }
     }
@@ -178,6 +195,11 @@ mod tests {
                 .iter()
                 .any(|edge| matches!(edge.edge_type, crate::domain::RelationshipType::GrowsOn))
         );
+        let debug_writes = sink.debug_writes.lock().expect("lock");
+        assert_eq!(debug_writes.len(), 1);
+        assert_eq!(debug_writes[0].0, PathBuf::from("out"));
+        assert_eq!(debug_writes[0].1.chunks.len(), 1);
+        assert_eq!(debug_writes[0].1.provider_responses.len(), 2);
     }
 
     #[test]
@@ -213,6 +235,10 @@ mod tests {
         let writes = sink.writes.lock().expect("lock");
         assert_eq!(writes.len(), 1);
         assert!(writes[0].1.edges.iter().any(|edge| edge.weight.0 == 2));
+        let debug_writes = sink.debug_writes.lock().expect("lock");
+        assert_eq!(debug_writes.len(), 1);
+        assert_eq!(debug_writes[0].1.chunks.len(), 2);
+        assert_eq!(debug_writes[0].1.provider_responses.len(), 4);
     }
 
     #[test]
@@ -248,6 +274,19 @@ mod tests {
         assert!(output_dir.join("graph.json").is_file());
         assert!(output_dir.join("index.html").is_file());
         assert!(output_dir.join("cytoscape.min.js").is_file());
+        assert!(output_dir.join("debug").join("chunk-list.json").is_file());
+        assert!(
+            output_dir
+                .join("debug")
+                .join("raw-provider-responses.json")
+                .is_file()
+        );
+        assert!(
+            output_dir
+                .join("debug")
+                .join("extracted-mentions.json")
+                .is_file()
+        );
         assert!(
             fs::read_to_string(output_dir.join("index.html"))
                 .expect("index html")

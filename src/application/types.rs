@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
-use crate::domain::{DocumentId, EntityMention, NonEmptyString, RelationshipMention, TokenCount};
+use serde::Serialize;
+
+use crate::domain::{
+    DocumentId, EntityMention, KnowledgeGraph, NonEmptyString, RelationshipMention, TokenCount,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ProviderMode {
@@ -64,4 +68,81 @@ pub(crate) struct Chunk {
 pub(crate) struct ExtractionOutcome {
     pub(crate) entities: Vec<EntityMention>,
     pub(crate) relationships: Vec<RelationshipMention>,
+    pub(crate) provider_responses: Vec<CapturedProviderResponse>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TraceableIngestResult {
+    pub(crate) graph: KnowledgeGraph,
+    pub(crate) trace: IngestionTrace,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub(crate) struct IngestionTrace {
+    pub(crate) chunks: Vec<ChunkTrace>,
+    pub(crate) provider_responses: Vec<ProviderResponseTrace>,
+    pub(crate) extracted_mentions: Vec<ChunkExtractionTrace>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ChunkTrace {
+    pub(crate) index: usize,
+    pub(crate) document_id: String,
+    pub(crate) text: String,
+    pub(crate) token_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) enum ProviderResponseKind {
+    EntityExtraction,
+    RelationshipExtraction,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ProviderResponseTrace {
+    pub(crate) chunk_index: usize,
+    pub(crate) kind: ProviderResponseKind,
+    pub(crate) raw_response: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct CapturedProviderResponse {
+    pub(crate) kind: ProviderResponseKind,
+    pub(crate) raw_response: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ChunkExtractionTrace {
+    pub(crate) chunk_index: usize,
+    pub(crate) entities: Vec<EntityMentionTrace>,
+    pub(crate) relationships: Vec<RelationshipMentionTrace>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct EntityMentionTrace {
+    pub(crate) name: String,
+    pub(crate) entity_type: String,
+    pub(crate) description: String,
+    pub(crate) source_document_id: String,
+    pub(crate) source_text: String,
+    pub(crate) source_token_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct RelationshipMentionTrace {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    pub(crate) relationship_type: String,
+    pub(crate) description: String,
+    pub(crate) evidence: Vec<EvidenceTrace>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct EvidenceTrace {
+    pub(crate) fact: String,
+    pub(crate) citation_text: String,
+    pub(crate) status: String,
+    pub(crate) source_document_id: String,
+    pub(crate) source_text: String,
+    pub(crate) source_token_count: usize,
 }

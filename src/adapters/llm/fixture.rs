@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use crate::application::AppError;
 use crate::domain::NonEmptyString;
 
-use super::client::SchemaLlmClient;
+use super::client::{GeneratedSchemaValue, SchemaLlmClient};
 use super::schema::{AiExtractionResponse, AiRelationshipExtractionResponse};
 
 pub(crate) struct FakeSchemaLlmClient;
@@ -17,7 +17,7 @@ impl SchemaLlmClient for FakeSchemaLlmClient {
         &self,
         _sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
@@ -36,8 +36,14 @@ impl SchemaLlmClient for FakeSchemaLlmClient {
             ));
         };
 
-        serde_json::from_value(payload)
-            .map_err(|_| AppError::provider_response("fixture response does not match schema"))
+        let raw_response = payload.to_string();
+        let parsed = serde_json::from_value(payload)
+            .map_err(|_| AppError::provider_response("fixture response does not match schema"))?;
+
+        Ok(GeneratedSchemaValue {
+            parsed,
+            raw_response,
+        })
     }
 }
 

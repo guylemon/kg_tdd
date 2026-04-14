@@ -2,16 +2,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::adapters::{ConfiguredSchemaLlmClient, HubTokenizerSource, ParallelChunkExtractor};
-use crate::application::{IngestConfig, MaxConcurrency, ProviderConfig, ProviderMode};
-use crate::domain::{
-    EntityMention, EntityType, EpistemicStatus, GraphEdge, GraphNode, KnowledgeGraph,
-    RelationshipMention, RelationshipType, consolidate_entities, consolidate_relationships,
+use crate::adapters::{
+    ConfiguredSchemaLlmClient, FileGraphArtifactSink, HubTokenizerSource, ParallelChunkExtractor,
 };
-use crate::ports::{ChunkExtractor, DocumentPartitioner, DocumentSource};
+use crate::application::{
+    IngestConfig, IngestDocumentService, IngestionTrace, MaxConcurrency, ProviderConfig,
+    ProviderMode, TraceableIngestResult,
+};
+use crate::domain::{
+    EntityType, EpistemicStatus, GraphEdge, GraphNode, KnowledgeGraph, RelationshipType,
+};
+use crate::ports::{DocumentSource, GraphArtifactSink};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,28 +168,14 @@ fn evaluate_fixture(fixture: &GoldFixture, config: &EvalConfig) -> Result<(), St
     )
     .map_err(|err| format!("fixture {} failed to build extractor: {err}", fixture.id))?;
 
-    let chunks = extractor
-        .partition(&document)
-        .map_err(|err| format!("fixture {} failed to partition input: {err}", fixture.id))?;
+    let service = IngestDocumentService::new(extractor);
+    let ingest_result = service
+        .execute_with_trace(&document)
+        .map_err(|err| format!("fixture {} failed during extraction: {err}", fixture.id))?;
 
-    let mut entities = Vec::new();
-    let mut relationships = Vec::new();
-
-    for chunk in chunks {
-        let extraction = extractor
-            .extract(chunk)
-            .map_err(|err| format!("fixture {} failed during extraction: {err}", fixture.id))?;
-        entities.extend(extraction.entities);
-        relationships.extend(extraction.relationships);
-    }
-
-    let normalized_extraction = normalize_actual_extraction(&entities, &relationships);
+    let normalized_extraction = normalize_actual_extraction(&ingest_result.trace);
     let extraction_diff = diff_extraction(&fixture.expected_extraction, &normalized_extraction);
-    let graph = KnowledgeGraph {
-        nodes: consolidate_entities(entities),
-        edges: consolidate_relationships(relationships),
-    };
-    let normalized_graph = normalize_actual_graph(&graph);
+    let normalized_graph = normalize_actual_graph(&ingest_result.graph);
     let graph_diff = diff_graph(&fixture.expected_graph, &normalized_graph);
 
     let mut sections = Vec::new();
@@ -198,9 +189,16 @@ fn evaluate_fixture(fixture: &GoldFixture, config: &EvalConfig) -> Result<(), St
     if sections.is_empty() {
         Ok(())
     } else {
+        let debug_output = persist_failure_artifacts(&fixture.id, &ingest_result).ok();
         Err(format!(
-            "fixture {} did not match gold expectations\n{}",
+            "fixture {} did not match gold expectations{}\n{}",
             fixture.id,
+            debug_output
+                .as_ref()
+                .map_or_else(String::new, |path| format!(
+                    "\nDebug artifacts: {}",
+                    path.display()
+                )),
             sections.join("\n")
         ))
     }
@@ -387,39 +385,43 @@ struct NormalizedGraph {
     edges: BTreeMap<String, ActualEdge>,
 }
 
-fn normalize_actual_extraction(
-    entities: &[EntityMention],
-    relationships: &[RelationshipMention],
-) -> NormalizedExtraction {
+fn normalize_actual_extraction(trace: &IngestionTrace) -> NormalizedExtraction {
     let mut entity_counts = BTreeMap::new();
-    for entity in entities {
-        let key = format!(
-            "name={:?}|type={:?}|description={:?}",
-            entity.name.0, entity.entity_type, entity.description.0
-        );
-        *entity_counts.entry(key).or_insert(0) += 1;
+    for chunk in &trace.extracted_mentions {
+        for entity in &chunk.entities {
+            let key = extraction_entity_key(
+                entity.name.as_str(),
+                entity.entity_type.as_str(),
+                entity.description.as_str(),
+            );
+            *entity_counts.entry(key).or_insert(0) += 1;
+        }
     }
 
     let mut relationship_counts = BTreeMap::new();
-    for relationship in relationships {
-        let evidence = relationship
-            .evidence
-            .iter()
-            .map(|claim| ExpectedEvidence {
-                fact: claim.fact.0.clone(),
-                citation_text: claim.citation_text.clone(),
-                status: claim.status.clone(),
-            })
-            .collect::<Vec<_>>();
-        let key = format!(
-            "source={:?}|target={:?}|type={:?}|description={:?}|evidence={:?}",
-            relationship.source.0,
-            relationship.target.0,
-            relationship.relationship_type,
-            relationship.description.0,
-            sorted_unique(evidence)
-        );
-        *relationship_counts.entry(key).or_insert(0) += 1;
+    for chunk in &trace.extracted_mentions {
+        for relationship in &chunk.relationships {
+            let evidence = relationship
+                .evidence
+                .iter()
+                .map(|item| {
+                    extraction_evidence_key(
+                        item.fact.as_str(),
+                        item.citation_text.as_str(),
+                        item.status.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let evidence = sorted_unique(evidence);
+            let key = extraction_relationship_key(
+                relationship.source.as_str(),
+                relationship.target.as_str(),
+                relationship.relationship_type.as_str(),
+                relationship.description.as_str(),
+                &evidence,
+            );
+            *relationship_counts.entry(key).or_insert(0) += 1;
+        }
     }
 
     NormalizedExtraction {
@@ -474,9 +476,11 @@ fn normalize_edge(edge: &GraphEdge) -> ActualEdge {
 fn count_expected_entities(entities: &[ExpectedEntityMention]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for entity in entities {
-        let key = format!(
-            "name={:?}|type={:?}|description={:?}",
-            entity.name, entity.entity_type, entity.description
+        let entity_type = format!("{:?}", entity.entity_type);
+        let key = extraction_entity_key(
+            entity.name.as_str(),
+            entity_type.as_str(),
+            entity.description.as_str(),
         );
         *counts.entry(key).or_insert(0) += 1;
     }
@@ -488,17 +492,72 @@ fn count_expected_relationships(
 ) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for relationship in relationships {
-        let key = format!(
-            "source={:?}|target={:?}|type={:?}|description={:?}|evidence={:?}",
-            relationship.source,
-            relationship.target,
-            relationship.relationship_type,
-            relationship.description,
-            sorted_unique(relationship.evidence.clone())
+        let relationship_type = format!("{:?}", relationship.relationship_type);
+        let evidence = relationship
+            .evidence
+            .iter()
+            .map(|item| {
+                let status = format!("{:?}", item.status);
+                extraction_evidence_key(
+                    item.fact.as_str(),
+                    item.citation_text.as_str(),
+                    status.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let evidence = sorted_unique(evidence);
+        let key = extraction_relationship_key(
+            relationship.source.as_str(),
+            relationship.target.as_str(),
+            relationship_type.as_str(),
+            relationship.description.as_str(),
+            &evidence,
         );
         *counts.entry(key).or_insert(0) += 1;
     }
     counts
+}
+
+fn extraction_entity_key(name: &str, entity_type: &str, description: &str) -> String {
+    format!("name={name:?}|type={entity_type}|description={description:?}")
+}
+
+fn extraction_relationship_key(
+    source: &str,
+    target: &str,
+    relationship_type: &str,
+    description: &str,
+    evidence: &[String],
+) -> String {
+    format!(
+        "source={source:?}|target={target:?}|type={relationship_type}|description={description:?}|evidence={evidence:?}"
+    )
+}
+
+fn extraction_evidence_key(fact: &str, citation_text: &str, status: &str) -> String {
+    format!("fact={fact:?}|citation_text={citation_text:?}|status={status}")
+}
+
+fn persist_failure_artifacts(
+    fixture_id: &str,
+    ingest_result: &TraceableIngestResult,
+) -> Result<PathBuf, String> {
+    let output_dir = temp_eval_debug_dir(fixture_id);
+    FileGraphArtifactSink
+        .write_graph(&output_dir, &ingest_result.graph)
+        .map_err(|err| format!("failed to write eval graph artifacts: {err}"))?;
+    FileGraphArtifactSink
+        .write_debug_artifacts(&output_dir, &ingest_result.trace)
+        .map_err(|err| format!("failed to write eval debug artifacts: {err}"))?;
+    Ok(output_dir)
+}
+
+fn temp_eval_debug_dir(fixture_id: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    std::env::temp_dir().join(format!("kg_tdd_eval_debug_{fixture_id}_{unique}"))
 }
 
 fn sorted_unique<T>(items: Vec<T>) -> Vec<T>

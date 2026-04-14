@@ -11,6 +11,10 @@ Each successful run writes an output directory containing:
 - `graph.json`
 - `index.html`
 - `cytoscape.min.js`
+- `debug/`
+  - `chunk-list.json`
+  - `raw-provider-responses.json`
+  - `extracted-mentions.json`
 
 This output layout is the current artifact contract for the CLI.
 
@@ -146,6 +150,13 @@ The generated output directory is intended to be portable and inspectable as sta
 
 Source viewer assets live under [assets/viewer](/home/eci/dev/kg_tdd/assets/viewer:1). The runtime output is copied from those repo-owned assets into the requested output directory.
 
+### `debug/`
+
+- Debug-oriented intermediate artifacts emitted alongside the viewer bundle
+- `chunk-list.json` captures the partitioned chunk list
+- `raw-provider-responses.json` captures the raw provider payload for each schema call
+- `extracted-mentions.json` captures entity and relationship mentions before consolidation
+
 ## Local Viewing
 
 Open the bundle through a local HTTP server rather than directly from `file://`, since the viewer fetches `graph.json`.
@@ -188,6 +199,8 @@ Opt-in evaluation target:
 ```bash
 cargo test --test eval_gold -- --ignored
 ```
+
+When a gold fixture fails, the harness now writes a temporary debug artifact bundle and includes its path in the failure message.
 
 Required evaluation environment variables:
 

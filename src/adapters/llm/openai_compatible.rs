@@ -8,7 +8,7 @@ use ureq::Agent;
 use crate::application::{AppError, ProviderConfig};
 use crate::domain::NonEmptyString;
 
-use super::client::SchemaLlmClient;
+use super::client::{GeneratedSchemaValue, SchemaLlmClient};
 use super::logging::{
     PROVIDER_RESPONSE_SNIPPET_LEN, log_provider_request, log_provider_response,
     raw_provider_debug_enabled, snippet,
@@ -64,7 +64,7 @@ impl OpenAiCompatibleSchemaLlmClient {
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
@@ -150,13 +150,18 @@ impl OpenAiCompatibleSchemaLlmClient {
             );
         }
 
-        serde_json::from_str(&content).map_err(|_| {
+        let parsed = serde_json::from_str(&content).map_err(|_| {
             debug!(
                 "provider assistant content schema mismatch: schema={}, snippet={}",
                 schema_name,
                 snippet(&content, PROVIDER_RESPONSE_SNIPPET_LEN)
             );
             AppError::provider_response("assistant content does not match schema")
+        })?;
+
+        Ok(GeneratedSchemaValue {
+            parsed,
+            raw_response: response_text,
         })
     }
 }
@@ -166,7 +171,7 @@ impl SchemaLlmClient for OpenAiCompatibleSchemaLlmClient {
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
