@@ -5,5 +5,9 @@ mod types;
 pub(crate) use error::AppError;
 pub(crate) use ingest_document::IngestDocumentService;
 pub(crate) use types::{
-    Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency, ProviderConfig, ProviderMode, RunConfig,
+    CapturedProviderResponse, Chunk, ChunkExtractionTrace, ChunkTrace, EntityMentionTrace,
+    EvidenceTrace, ExtractionOutcome, IngestConfig, IngestionTrace, MaxConcurrency, ProviderConfig,
+    ProviderMode, ProviderResponseKind, ProviderResponseTrace, RelationshipMentionTrace, RunConfig,
+    RunContext, RunErrorMetadata, RunMetadata, RunMode, RunStatus, TraceableIngestResult,
+    utc_now_rfc3339,
 };

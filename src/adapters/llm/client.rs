@@ -1,7 +1,7 @@
 use serde::de::DeserializeOwned;
 
-use log::debug;
 use schemars::JsonSchema;
+use tracing::debug;
 
 use crate::application::{AppError, ProviderConfig, ProviderMode};
 use crate::domain::NonEmptyString;
@@ -9,12 +9,17 @@ use crate::domain::NonEmptyString;
 use super::fixture::FakeSchemaLlmClient;
 use super::openai_compatible::OpenAiCompatibleSchemaLlmClient;
 
+pub(crate) struct GeneratedSchemaValue<T> {
+    pub(crate) parsed: T,
+    pub(crate) raw_response: String,
+}
+
 pub(crate) trait SchemaLlmClient: Send + Sync {
     fn generate_with_schema<T>(
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static;
 }
@@ -44,7 +49,7 @@ impl SchemaLlmClient for ConfiguredSchemaLlmClient {
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {

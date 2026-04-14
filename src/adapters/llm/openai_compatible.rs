@@ -1,14 +1,14 @@
 use std::time::Duration;
 
-use log::debug;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use tracing::debug;
 use ureq::Agent;
 
 use crate::application::{AppError, ProviderConfig};
 use crate::domain::NonEmptyString;
 
-use super::client::SchemaLlmClient;
+use super::client::{GeneratedSchemaValue, SchemaLlmClient};
 use super::logging::{
     PROVIDER_RESPONSE_SNIPPET_LEN, log_provider_request, log_provider_response,
     raw_provider_debug_enabled, snippet,
@@ -64,7 +64,7 @@ impl OpenAiCompatibleSchemaLlmClient {
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
@@ -127,17 +127,7 @@ impl OpenAiCompatibleSchemaLlmClient {
                 AppError::provider_response("response body is not valid JSON")
             })?;
 
-        let content = response_body
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .ok_or_else(|| {
-                debug!(
-                    "provider response missing assistant message content: schema={schema_name}, endpoint={endpoint}"
-                );
-                AppError::provider_response("assistant message content missing from response")
-            })?;
+        let content = assistant_message_content(response_body, schema_name, &endpoint)?;
 
         if raw_provider_debug_enabled() {
             debug!("raw provider assistant content for {schema_name}: {content}");
@@ -150,13 +140,11 @@ impl OpenAiCompatibleSchemaLlmClient {
             );
         }
 
-        serde_json::from_str(&content).map_err(|_| {
-            debug!(
-                "provider assistant content schema mismatch: schema={}, snippet={}",
-                schema_name,
-                snippet(&content, PROVIDER_RESPONSE_SNIPPET_LEN)
-            );
-            AppError::provider_response("assistant content does not match schema")
+        let parsed = parse_assistant_content::<T>(&content, schema_name)?;
+
+        Ok(GeneratedSchemaValue {
+            parsed,
+            raw_response: response_text,
         })
     }
 }
@@ -166,7 +154,7 @@ impl SchemaLlmClient for OpenAiCompatibleSchemaLlmClient {
         &self,
         sys_prompt: NonEmptyString,
         user_prompt: NonEmptyString,
-    ) -> Result<T, AppError>
+    ) -> Result<GeneratedSchemaValue<T>, AppError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
@@ -222,11 +210,43 @@ pub(super) fn classify_status_code(code: u16, endpoint: &str) -> AppError {
     let message = format!("HTTP {code} from {endpoint}");
     if code == 401 || code == 403 {
         AppError::provider_authentication(message)
-    } else if (500..=599).contains(&code) {
+    } else if code == 429 || (500..=599).contains(&code) {
         AppError::provider_transport(message)
     } else {
         AppError::provider_response(message)
     }
+}
+
+fn assistant_message_content(
+    response_body: ChatCompletionResponse,
+    schema_name: &str,
+    endpoint: &str,
+) -> Result<String, AppError> {
+    response_body
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .ok_or_else(|| {
+            debug!(
+                "provider response missing assistant message content: schema={schema_name}, endpoint={endpoint}"
+            );
+            AppError::provider_response("assistant message content missing from response")
+        })
+}
+
+fn parse_assistant_content<T>(content: &str, schema_name: &str) -> Result<T, AppError>
+where
+    T: DeserializeOwned + JsonSchema + 'static,
+{
+    serde_json::from_str(content).map_err(|_| {
+        debug!(
+            "provider assistant content schema mismatch: schema={}, snippet={}",
+            schema_name,
+            snippet(content, PROVIDER_RESPONSE_SNIPPET_LEN)
+        );
+        AppError::provider_response("assistant content does not match schema")
+    })
 }
 
 fn is_retryable(error: &AppError) -> bool {
@@ -256,9 +276,13 @@ where
 #[cfg(test)]
 mod tests {
     use crate::application::AppError;
+    use crate::application::{ProviderConfig, ProviderMode};
     use crate::domain::NonEmptyString;
 
-    use super::{classify_status_code, retry_operation, validate_base_url};
+    use super::{
+        OpenAiCompatibleSchemaLlmClient, classify_status_code, parse_assistant_content,
+        retry_operation, validate_base_url,
+    };
     use crate::adapters::llm::schema::{
         AiExtractionResponse, AiRelationshipExtractionResponse, build_chat_request,
     };
@@ -267,6 +291,44 @@ mod tests {
     fn validates_provider_base_url() {
         validate_base_url("http://localhost:8080").expect("valid URL");
         assert!(validate_base_url("localhost:8080").is_err());
+    }
+
+    #[test]
+    fn from_config_rejects_missing_base_url_in_openai_mode() {
+        let config = ProviderConfig {
+            mode: ProviderMode::OpenAiCompatible,
+            base_url: None,
+            model: Some(String::from("gpt-4o-mini")),
+        };
+
+        let result = OpenAiCompatibleSchemaLlmClient::from_config(&config);
+        assert!(result.is_err(), "missing base url should fail");
+        let err = result.err().expect("error expected");
+
+        assert!(matches!(err, AppError::InvalidProviderConfig(_)));
+        assert!(
+            err.to_string()
+                .contains("missing required flag for openai-compatible mode: --provider-base-url")
+        );
+    }
+
+    #[test]
+    fn from_config_rejects_missing_model_in_openai_mode() {
+        let config = ProviderConfig {
+            mode: ProviderMode::OpenAiCompatible,
+            base_url: Some(String::from("http://localhost:8080")),
+            model: None,
+        };
+
+        let result = OpenAiCompatibleSchemaLlmClient::from_config(&config);
+        assert!(result.is_err(), "missing model should fail");
+        let err = result.err().expect("error expected");
+
+        assert!(matches!(err, AppError::InvalidProviderConfig(_)));
+        assert!(
+            err.to_string()
+                .contains("missing required flag for openai-compatible mode: --provider-model")
+        );
     }
 
     #[test]
@@ -305,6 +367,48 @@ mod tests {
     }
 
     #[test]
+    fn malformed_provider_content_is_reported_as_provider_response() {
+        let result = parse_assistant_content::<AiExtractionResponse>(
+            "{ this is not valid json }",
+            "ai::extract",
+        );
+        assert!(result.is_err(), "malformed content should fail");
+        let err = result.err().expect("error expected");
+
+        assert!(matches!(err, AppError::ProviderResponse(_)));
+        assert!(
+            err.to_string()
+                .contains("assistant content does not match schema")
+        );
+    }
+
+    #[test]
+    fn status_classification_marks_auth_and_retryable_failures_correctly() {
+        let endpoint = "http://localhost:8080/v1/chat/completions";
+
+        assert!(matches!(
+            classify_status_code(401, endpoint),
+            AppError::ProviderAuthentication(_)
+        ));
+        assert!(matches!(
+            classify_status_code(403, endpoint),
+            AppError::ProviderAuthentication(_)
+        ));
+        assert!(matches!(
+            classify_status_code(429, endpoint),
+            AppError::ProviderTransport(_)
+        ));
+        assert!(matches!(
+            classify_status_code(500, endpoint),
+            AppError::ProviderTransport(_)
+        ));
+        assert!(matches!(
+            classify_status_code(404, endpoint),
+            AppError::ProviderResponse(_)
+        ));
+    }
+
+    #[test]
     fn openai_compatible_client_retries_transient_failures() {
         let mut attempts = 0;
         let result = retry_operation::<(), _>(2, || {
@@ -312,6 +416,25 @@ mod tests {
             if attempts == 1 {
                 Err(classify_status_code(
                     500,
+                    "http://localhost:8080/v1/chat/completions",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn openai_compatible_client_retries_rate_limit_failures() {
+        let mut attempts = 0;
+        let result = retry_operation::<(), _>(2, || {
+            attempts += 1;
+            if attempts == 1 {
+                Err(classify_status_code(
+                    429,
                     "http://localhost:8080/v1/chat/completions",
                 ))
             } else {

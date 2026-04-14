@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex, mpsc};
 
-use log::debug;
 use text_splitter::{ChunkConfig, TextSplitter};
 use tokenizers::Tokenizer;
+use tracing::debug;
 
 use crate::application::{AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency};
+use crate::application::{CapturedProviderResponse, ProviderResponseKind};
 use crate::domain::{
     AnnotatedText, EdgeDescription, EntityMention, EntityName, FactualClaim, NodeDescription,
     NonEmptyString, RelationshipMention, TextUnit, TokenCount, node_id_for_entity,
@@ -14,7 +15,8 @@ use crate::ports::{ChunkExtractor, DocumentPartitioner};
 use super::{
     TokenizerSource,
     llm::{
-        AiExtractionResponse, AiRelationshipExtractionResponse, ExtractedEvidence, SchemaLlmClient,
+        AiExtractionResponse, AiRelationshipExtractionResponse, ExtractedEvidence,
+        GeneratedSchemaValue, SchemaLlmClient,
     },
 };
 
@@ -168,9 +170,18 @@ where
         chunk.document_id.0, chunk.token_count.0
     );
     let entity_response = request_entity_extraction(&chunk.text, llm_client)?;
-    let marked = mark_entities(chunk, &entity_response);
-    let entities = extract_entities(&marked, entity_response);
-    let relationships = extract_relationships(&marked, llm_client)?;
+    let mut provider_responses = vec![CapturedProviderResponse {
+        kind: ProviderResponseKind::EntityExtraction,
+        raw_response: entity_response.raw_response,
+    }];
+    let marked = mark_entities(chunk, &entity_response.parsed);
+    let entities = extract_entities(&marked, entity_response.parsed);
+    let relationship_response = extract_relationships(&marked, llm_client)?;
+    provider_responses.push(CapturedProviderResponse {
+        kind: ProviderResponseKind::RelationshipExtraction,
+        raw_response: relationship_response.raw_response,
+    });
+    let relationships = relationship_response.parsed;
 
     debug!(
         "finished chunk extraction: entities={}, relationships={}",
@@ -181,13 +192,14 @@ where
     Ok(ExtractionOutcome {
         entities,
         relationships,
+        provider_responses,
     })
 }
 
 fn extract_relationships<C>(
     text_unit: &TextUnit,
     llm_client: &C,
-) -> Result<Vec<RelationshipMention>, AppError>
+) -> Result<GeneratedSchemaValue<Vec<RelationshipMention>>, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
@@ -197,7 +209,8 @@ where
         .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
 
     let source_text = deannotate_text(&text_unit.text.0);
-    Ok(response
+    let relationships = response
+        .parsed
         .relationships
         .into_iter()
         .filter_map(|relationship| {
@@ -225,7 +238,12 @@ where
                 relationship_type: relationship.relationship_type,
             })
         })
-        .collect())
+        .collect();
+
+    Ok(GeneratedSchemaValue {
+        parsed: relationships,
+        raw_response: response.raw_response,
+    })
 }
 
 fn map_evidence_item(
@@ -307,7 +325,7 @@ fn deannotate_text(text: &str) -> String {
 fn request_entity_extraction<C>(
     text: &NonEmptyString,
     llm_client: &C,
-) -> Result<AiExtractionResponse, AppError>
+) -> Result<GeneratedSchemaValue<AiExtractionResponse>, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
@@ -330,7 +348,7 @@ mod tests {
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
 
-    use crate::adapters::llm::AiExtractionResponse;
+    use crate::adapters::llm::{AiExtractionResponse, GeneratedSchemaValue};
     use crate::adapters::{FakeSchemaLlmClient, SchemaLlmClient, StaticTokenizerSource};
     use crate::application::{AppError, Chunk, IngestConfig, MaxConcurrency};
     use crate::domain::{Document, DocumentId, NonEmptyString, TokenCount};
@@ -376,6 +394,25 @@ mod tests {
 
         assert_eq!(outcome.entities.len(), 3);
         assert_eq!(outcome.relationships.len(), 2);
+        assert_eq!(outcome.provider_responses.len(), 2);
+        assert_eq!(
+            outcome.provider_responses[0].kind,
+            crate::application::ProviderResponseKind::EntityExtraction
+        );
+        assert_eq!(
+            outcome.provider_responses[1].kind,
+            crate::application::ProviderResponseKind::RelationshipExtraction
+        );
+        assert!(
+            outcome.provider_responses[0]
+                .raw_response
+                .contains("\"entities\"")
+        );
+        assert!(
+            outcome.provider_responses[1]
+                .raw_response
+                .contains("\"relationships\"")
+        );
         assert_eq!(outcome.relationships[0].source.0, "node:lifeform:apple");
         assert_eq!(outcome.relationships[1].target.0, "node:lifeform:trees");
     }
@@ -453,7 +490,7 @@ mod tests {
                 &self,
                 _sys_prompt: NonEmptyString,
                 _user_prompt: NonEmptyString,
-            ) -> Result<T, AppError>
+            ) -> Result<GeneratedSchemaValue<T>, AppError>
             where
                 T: serde::de::DeserializeOwned + JsonSchema + 'static,
             {
@@ -505,8 +542,14 @@ mod tests {
                     })
                 };
 
-                serde_json::from_value(payload)
-                    .map_err(|_| AppError::provider_response("test payload invalid"))
+                let raw_response = payload.to_string();
+                let parsed = serde_json::from_value(payload)
+                    .map_err(|_| AppError::provider_response("test payload invalid"))?;
+
+                Ok(GeneratedSchemaValue {
+                    parsed,
+                    raw_response,
+                })
             }
         }
 
@@ -522,6 +565,7 @@ mod tests {
 
         assert_eq!(outcome.relationships.len(), 1);
         assert_eq!(outcome.relationships[0].evidence.len(), 1);
+        assert_eq!(outcome.provider_responses.len(), 2);
         assert_eq!(
             outcome.relationships[0].evidence[0].citation_text,
             "apple is a red fruit"
@@ -545,7 +589,7 @@ mod tests {
                 &self,
                 _sys_prompt: NonEmptyString,
                 _user_prompt: NonEmptyString,
-            ) -> Result<T, AppError>
+            ) -> Result<GeneratedSchemaValue<T>, AppError>
             where
                 T: serde::de::DeserializeOwned + JsonSchema + 'static,
             {
@@ -593,8 +637,14 @@ mod tests {
                     })
                 };
 
-                serde_json::from_value(payload)
-                    .map_err(|_| AppError::provider_response("test payload invalid"))
+                let raw_response = payload.to_string();
+                let parsed = serde_json::from_value(payload)
+                    .map_err(|_| AppError::provider_response("test payload invalid"))?;
+
+                Ok(GeneratedSchemaValue {
+                    parsed,
+                    raw_response,
+                })
             }
         }
 
@@ -609,6 +659,7 @@ mod tests {
         .expect("outcome");
 
         assert!(outcome.relationships.is_empty());
+        assert_eq!(outcome.provider_responses.len(), 2);
     }
 
     fn build_test_tokenizer() -> Tokenizer {

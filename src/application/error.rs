@@ -84,6 +84,25 @@ impl AppError {
     pub(crate) fn write_output(path: impl Into<PathBuf>) -> Self {
         Self::WriteOutput { path: path.into() }
     }
+
+    pub(crate) fn metadata_category(&self) -> &'static str {
+        match self {
+            Self::Usage(_) => "usage",
+            Self::InvalidInputPath(_) => "invalid-input-path",
+            Self::ReadInput { .. } => "read-input",
+            Self::EmptyInput { .. } => "empty-input",
+            Self::LoadTokenizer(_) => "load-tokenizer",
+            Self::InvalidProviderConfig(_) => "invalid-provider-config",
+            Self::ProviderTransport(_) => "provider-transport",
+            Self::ProviderTimeout(_) => "provider-timeout",
+            Self::ProviderAuthentication(_) => "provider-authentication",
+            Self::ProviderResponse(_) => "provider-response",
+            Self::ExtractChunk => "extract-chunk",
+            Self::ProjectGraph => "project-graph",
+            Self::CreateOutputDir { .. } => "create-output-dir",
+            Self::WriteOutput { .. } => "write-output",
+        }
+    }
 }
 
 impl fmt::Display for AppError {

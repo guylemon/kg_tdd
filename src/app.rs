@@ -1,7 +1,9 @@
-use log::debug;
+use tracing::debug;
 
 use crate::adapters::{ParallelChunkExtractor, SchemaLlmClient, TokenizerSource};
-use crate::application::{AppError, IngestDocumentService, RunConfig};
+use crate::application::{
+    AppError, IngestDocumentService, RunConfig, RunContext, RunMode, RunStatus, utc_now_rfc3339,
+};
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
 pub struct App<S, G, C, T> {
@@ -36,55 +38,229 @@ where
     }
 
     pub fn run(self) -> Result<(), AppError> {
-        debug!(
-            "starting app run: provider_mode={:?}, input_path={}, output_dir={}, max_chunk_tokens={}",
-            self.config.provider.mode,
-            self.config.input_path.display(),
-            self.config.output_dir.display(),
-            self.config.ingest.max_chunk_tokens
-        );
+        let Self {
+            config,
+            document_source,
+            graph_sink,
+            llm_client,
+            tokenizer_source,
+        } = self;
 
-        let extractor = ParallelChunkExtractor::new(
-            self.config.ingest,
-            self.config.max_concurrency,
-            self.llm_client,
-            &self.tokenizer_source,
+        let run_context = build_run_context(&config);
+        log_run_started(&config, &run_context);
+
+        let extractor = build_extractor(
+            config.ingest.clone(),
+            config.max_concurrency,
+            llm_client,
+            &tokenizer_source,
         )?;
         let service = IngestDocumentService::new(extractor);
-
-        debug!(
-            "reading source document from {}",
-            self.config.input_path.display()
-        );
-        let document = self
-            .document_source
-            .read_document(&self.config.input_path)?;
-        debug!(
-            "loaded document {} with {} bytes of text",
-            document.id.0,
-            document.text.0.len()
-        );
-
-        let knowledge_graph = service.execute(&document)?;
-        debug!(
-            "ingestion complete: nodes={}, edges={}",
-            knowledge_graph.nodes.len(),
-            knowledge_graph.edges.len()
-        );
-
-        self.graph_sink
-            .write_graph(&self.config.output_dir, &knowledge_graph)?;
-        debug!(
-            "wrote graph artifact bundle to {}",
-            self.config.output_dir.display()
-        );
+        let document = load_document(&config, &document_source, &run_context)?;
+        let ingest_result = execute_ingestion(&run_context, &service, &document)?;
+        let metadata = finish_run(&run_context, &document, &ingest_result);
+        write_artifacts(
+            &config,
+            &graph_sink,
+            &run_context,
+            &document,
+            &ingest_result,
+            &metadata,
+        )?;
+        log_artifacts_written(&config, &metadata);
 
         Ok(())
     }
 }
 
+fn build_run_context(config: &RunConfig) -> RunContext {
+    RunContext::new(
+        RunMode::Cli,
+        config.input_path.clone(),
+        Some(config.output_dir.clone()),
+        &config.provider,
+        &config.ingest,
+        config.max_concurrency,
+    )
+}
+
+fn build_extractor<C, T>(
+    config: crate::application::IngestConfig,
+    max_concurrency: crate::application::MaxConcurrency,
+    llm_client: C,
+    tokenizer_source: &T,
+) -> Result<ParallelChunkExtractor<C>, AppError>
+where
+    C: SchemaLlmClient + 'static,
+    T: TokenizerSource,
+{
+    ParallelChunkExtractor::new(config, max_concurrency, llm_client, tokenizer_source)
+}
+
+fn load_document<S>(
+    config: &RunConfig,
+    document_source: &S,
+    run_context: &RunContext,
+) -> Result<crate::domain::Document, AppError>
+where
+    S: DocumentSource,
+{
+    debug!(
+        run_id = %run_context.run_id,
+        mode = %run_context.mode.label(),
+        input_path = %config.input_path.display(),
+        "document load started"
+    );
+    let document = match document_source.read_document(&config.input_path) {
+        Ok(document) => document,
+        Err(err) => {
+            log_run_failed(run_context, None, &err);
+            return Err(err);
+        }
+    };
+    debug!(
+        run_id = %run_context.run_id,
+        mode = %run_context.mode.label(),
+        document_id = %document.id.0,
+        document_bytes = document.text.0.len(),
+        "document loaded"
+    );
+    Ok(document)
+}
+
+fn execute_ingestion<C>(
+    run_context: &RunContext,
+    service: &IngestDocumentService<ParallelChunkExtractor<C>>,
+    document: &crate::domain::Document,
+) -> Result<crate::application::TraceableIngestResult, AppError>
+where
+    C: SchemaLlmClient + 'static,
+{
+    debug!(
+        run_id = %run_context.run_id,
+        mode = %run_context.mode.label(),
+        document_id = %document.id.0,
+        "ingestion started"
+    );
+    let ingest_result = match service.execute_with_trace(document) {
+        Ok(result) => result,
+        Err(err) => {
+            log_run_failed(run_context, Some(&document.id), &err);
+            return Err(err);
+        }
+    };
+    debug!(
+        run_id = %run_context.run_id,
+        mode = %run_context.mode.label(),
+        document_id = %document.id.0,
+        chunks = ingest_result.trace.chunks.len(),
+        extracted_entities = ingest_result
+            .trace
+            .extracted_mentions
+            .iter()
+            .map(|chunk| chunk.entities.len())
+            .sum::<usize>(),
+        extracted_relationships = ingest_result
+            .trace
+            .extracted_mentions
+            .iter()
+            .map(|chunk| chunk.relationships.len())
+            .sum::<usize>(),
+        final_nodes = ingest_result.graph.nodes.len(),
+        final_edges = ingest_result.graph.edges.len(),
+        "ingestion completed"
+    );
+    Ok(ingest_result)
+}
+
+fn finish_run(
+    run_context: &RunContext,
+    document: &crate::domain::Document,
+    ingest_result: &crate::application::TraceableIngestResult,
+) -> crate::application::RunMetadata {
+    run_context.finish(
+        Some(&document.id),
+        Some(ingest_result),
+        utc_now_rfc3339(),
+        RunStatus::Success,
+        None,
+    )
+}
+
+fn write_artifacts<G>(
+    config: &RunConfig,
+    graph_sink: &G,
+    run_context: &RunContext,
+    document: &crate::domain::Document,
+    ingest_result: &crate::application::TraceableIngestResult,
+    metadata: &crate::application::RunMetadata,
+) -> Result<(), AppError>
+where
+    G: GraphArtifactSink,
+{
+    if let Err(err) = graph_sink.write_graph(&config.output_dir, &ingest_result.graph) {
+        log_run_failed(run_context, Some(&document.id), &err);
+        return Err(err);
+    }
+
+    if let Err(err) =
+        graph_sink.write_debug_artifacts(&config.output_dir, &ingest_result.trace, metadata)
+    {
+        log_run_failed(run_context, Some(&document.id), &err);
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn log_run_started(config: &RunConfig, run_context: &RunContext) {
+    debug!(
+        run_id = %run_context.run_id,
+        mode = %run_context.mode.label(),
+        input_path = %run_context.input_path.display(),
+        output_dir = %config.output_dir.display(),
+        provider_mode = %run_context.provider.mode,
+        tokenizer_name = %run_context.tokenizer_name,
+        max_chunk_tokens = run_context.max_chunk_tokens,
+        max_concurrency = run_context.max_concurrency,
+        "run started"
+    );
+}
+
+fn log_artifacts_written(config: &RunConfig, metadata: &crate::application::RunMetadata) {
+    debug!(
+        run_id = %metadata.run_id,
+        mode = %metadata.mode.label(),
+        output_dir = %config.output_dir.display(),
+        debug_dir = %config.output_dir.join("debug").display(),
+        "artifacts written"
+    );
+}
+
+fn log_run_failed(
+    run_context: &RunContext,
+    document_id: Option<&crate::domain::DocumentId>,
+    err: &AppError,
+) {
+    debug!(
+        run_id = %run_context.run_id,
+        mode = %run_context.mode.label(),
+        input_path = %run_context.input_path.display(),
+        output_dir = %run_context
+            .output_dir
+            .as_ref()
+            .map_or_else(|| String::from("<none>"), |path| path.display().to_string()),
+        document_id = %document_id
+            .map_or_else(|| String::from("<none>"), |id| id.0.clone()),
+        error_category = %err.metadata_category(),
+        error = %err,
+        "run failed"
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -95,7 +271,10 @@ mod tests {
 
     use super::App;
     use crate::adapters::{FakeSchemaLlmClient, FileGraphArtifactSink, StaticTokenizerSource};
-    use crate::application::{AppError, IngestConfig, MaxConcurrency, ProviderConfig, RunConfig};
+    use crate::application::{
+        AppError, IngestConfig, IngestionTrace, MaxConcurrency, ProviderConfig, RunConfig,
+        RunMetadata, RunStatus,
+    };
     use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
     use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -113,9 +292,18 @@ mod tests {
         }
     }
 
+    struct FailingDocumentSource;
+
+    impl DocumentSource for FailingDocumentSource {
+        fn read_document(&self, input_path: &Path) -> Result<Document, AppError> {
+            Err(AppError::invalid_input_path(input_path))
+        }
+    }
+
     #[derive(Default)]
     struct RecordingGraphSink {
         writes: std::sync::Mutex<Vec<(PathBuf, KnowledgeGraph)>>,
+        debug_writes: std::sync::Mutex<Vec<(PathBuf, IngestionTrace, RunMetadata)>>,
     }
 
     impl GraphArtifactSink for &RecordingGraphSink {
@@ -125,6 +313,55 @@ mod tests {
                 .expect("lock")
                 .push((output_dir.to_path_buf(), graph.clone()));
             Ok(())
+        }
+
+        fn write_debug_artifacts(
+            &self,
+            output_dir: &Path,
+            trace: &IngestionTrace,
+            metadata: &RunMetadata,
+        ) -> Result<(), AppError> {
+            self.debug_writes.lock().expect("lock").push((
+                output_dir.to_path_buf(),
+                trace.clone(),
+                metadata.clone(),
+            ));
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingGraphSink {
+        graph_calls: Cell<usize>,
+        debug_calls: Cell<usize>,
+        fail_graph: bool,
+        fail_debug: bool,
+    }
+
+    impl GraphArtifactSink for &FailingGraphSink {
+        fn write_graph(&self, output_dir: &Path, _graph: &KnowledgeGraph) -> Result<(), AppError> {
+            self.graph_calls.set(self.graph_calls.get() + 1);
+            if self.fail_graph {
+                Err(AppError::write_output(output_dir.join("graph.json")))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn write_debug_artifacts(
+            &self,
+            output_dir: &Path,
+            _trace: &IngestionTrace,
+            _metadata: &RunMetadata,
+        ) -> Result<(), AppError> {
+            self.debug_calls.set(self.debug_calls.get() + 1);
+            if self.fail_debug {
+                Err(AppError::write_output(
+                    output_dir.join("debug").join("run-metadata.json"),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -178,6 +415,149 @@ mod tests {
                 .iter()
                 .any(|edge| matches!(edge.edge_type, crate::domain::RelationshipType::GrowsOn))
         );
+        let debug_writes = sink.debug_writes.lock().expect("lock");
+        assert_eq!(debug_writes.len(), 1);
+        assert_eq!(debug_writes[0].0, PathBuf::from("out"));
+        assert_eq!(debug_writes[0].1.chunks.len(), 1);
+        assert_eq!(debug_writes[0].1.provider_responses.len(), 2);
+        assert!(matches!(debug_writes[0].2.status, RunStatus::Success));
+        assert_eq!(debug_writes[0].2.mode.label(), "cli");
+        assert_eq!(debug_writes[0].2.output_dir, Some(PathBuf::from("out")));
+    }
+
+    #[test]
+    fn returns_document_load_error_without_writing_artifacts() {
+        let sink = FailingGraphSink::default();
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("missing/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
+            },
+            FailingDocumentSource,
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("document load should fail");
+
+        assert!(matches!(err, AppError::InvalidInputPath(_)));
+        assert_eq!(sink.graph_calls.get(), 0);
+        assert_eq!(sink.debug_calls.get(), 0);
+    }
+
+    #[test]
+    fn returns_ingestion_error_without_writing_artifacts() {
+        let sink = FailingGraphSink::default();
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(0),
+                provider: ProviderConfig::default(),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("ingestion should fail");
+
+        assert!(matches!(err, AppError::ExtractChunk));
+        assert_eq!(sink.graph_calls.get(), 0);
+        assert_eq!(sink.debug_calls.get(), 0);
+    }
+
+    #[test]
+    fn stops_before_debug_artifacts_when_graph_write_fails() {
+        let sink = FailingGraphSink {
+            fail_graph: true,
+            ..Default::default()
+        };
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("graph write should fail");
+
+        assert!(matches!(err, AppError::WriteOutput { .. }));
+        assert_eq!(sink.graph_calls.get(), 1);
+        assert_eq!(sink.debug_calls.get(), 0);
+    }
+
+    #[test]
+    fn returns_debug_artifact_error_after_graph_write_succeeds() {
+        let sink = FailingGraphSink {
+            fail_debug: true,
+            ..Default::default()
+        };
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("debug artifact write should fail");
+
+        assert!(matches!(err, AppError::WriteOutput { .. }));
+        assert_eq!(sink.graph_calls.get(), 1);
+        assert_eq!(sink.debug_calls.get(), 1);
     }
 
     #[test]
@@ -213,6 +593,11 @@ mod tests {
         let writes = sink.writes.lock().expect("lock");
         assert_eq!(writes.len(), 1);
         assert!(writes[0].1.edges.iter().any(|edge| edge.weight.0 == 2));
+        let debug_writes = sink.debug_writes.lock().expect("lock");
+        assert_eq!(debug_writes.len(), 1);
+        assert_eq!(debug_writes[0].1.chunks.len(), 2);
+        assert_eq!(debug_writes[0].1.provider_responses.len(), 4);
+        assert_eq!(debug_writes[0].2.counts.chunks, Some(2));
     }
 
     #[test]
@@ -248,6 +633,20 @@ mod tests {
         assert!(output_dir.join("graph.json").is_file());
         assert!(output_dir.join("index.html").is_file());
         assert!(output_dir.join("cytoscape.min.js").is_file());
+        assert!(output_dir.join("debug").join("chunk-list.json").is_file());
+        assert!(
+            output_dir
+                .join("debug")
+                .join("raw-provider-responses.json")
+                .is_file()
+        );
+        assert!(
+            output_dir
+                .join("debug")
+                .join("extracted-mentions.json")
+                .is_file()
+        );
+        assert!(output_dir.join("debug").join("run-metadata.json").is_file());
         assert!(
             fs::read_to_string(output_dir.join("index.html"))
                 .expect("index html")

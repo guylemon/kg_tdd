@@ -1,0 +1,47 @@
+{
+  "entities": [
+    {
+      "name": "apple",
+      "entity_type": "Lifeform",
+      "description": "A red fruit"
+    },
+    {
+      "name": "fruit",
+      "entity_type": "Concept",
+      "description": "An edible plant structure"
+    },
+    {
+      "name": "trees",
+      "entity_type": "Lifeform",
+      "description": "Woody plants"
+    }
+  ],
+  "relationships": [
+    {
+      "source": "node:lifeform:apple",
+      "target": "node:concept:fruit",
+      "relationship_type": "IsA",
+      "description": "apple is a fruit",
+      "evidence": [
+        {
+          "fact": "An apple is a red fruit",
+          "citation_text": "apple is a red fruit",
+          "status": "Probable"
+        }
+      ]
+    },
+    {
+      "source": "node:lifeform:apple",
+      "target": "node:lifeform:trees",
+      "relationship_type": "GrowsOn",
+      "description": "apple grows on trees",
+      "evidence": [
+        {
+          "fact": "apple grows on trees",
+          "citation_text": "grows on trees",
+          "status": "Probable"
+        }
+      ]
+    }
+  ]
+}
