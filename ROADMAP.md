@@ -93,19 +93,34 @@ Why this matters:
 - [x] Add gold-style fixture documents and expected graph outputs.
 - [ ] Introduce evaluation harnesses for:
   - [ ] extraction correctness
+    - Opt-in real-provider harness scaffolding now exists, but prompt behavior is still too unstable for the harness to pass reliably or define a durable regression boundary.
   - [ ] graph consolidation correctness
+    - Domain-graph comparison scaffolding now exists, but it is not yet verified as a stable pass/fail contract under live-provider behavior.
   - [ ] end-to-end regression detection
-- Add traceable intermediate artifacts for debugging:
-  - chunk list
-  - raw provider responses
-  - extracted mentions before consolidation
+    - Current evaluation stops at normalized domain-graph comparison. This is sufficient as a v1 working boundary, but it is too early to decide whether it is the final end-to-end regression boundary for the product.
+- [ ] Add traceable intermediate artifacts for debugging:
+  - [ ] chunk list
+  - [ ] raw provider responses
+  - [ ] extracted mentions before consolidation
 - Add structured logging and run metadata.
 - Add deterministic test coverage for failure paths, not only happy paths.
 
 Why this matters:
 The project can run, but it cannot yet measure quality or safely evolve.
 
-## Milestone 5: Input and Ingestion Robustness
+## Milestone 5: Prompt and Extraction Stabilization
+
+- Stabilize extraction prompts so the gold evaluation harness can pass consistently enough to distinguish prompt churn from real regressions.
+- Improve schema instructions and extraction prompts until entity, relationship, and evidence outputs are predictably shaped across the current gold fixture pack.
+- Use the opt-in real-provider evaluation target to iterate on prompt quality, not yet as a strict release gate.
+- Expand or refine gold fixture expectations only where needed to support prompt stabilization and clearer failure diagnosis.
+- Once evaluation behavior is reasonably stable, explicitly decide whether normalized domain-graph comparison is the final regression boundary or whether the product needs a broader end-to-end boundary.
+- Only after the step above, mark Milestone 4 item 2 and its subitems complete.
+
+Why this matters:
+Evaluation scaffolding exists, but prompt instability currently dominates the failures. The project needs a stabilization phase before gold-eval failures can be treated as reliable regressions.
+
+## Milestone 6: Input and Ingestion Robustness
 
 - Improve document identity beyond the current placeholder `stdin-document`.
 - Add real file-based input handling and path-based document metadata.
@@ -116,7 +131,7 @@ The project can run, but it cannot yet measure quality or safely evolve.
 Why this matters:
 The current IO layer is still prototype-level. Even with a provider integrated, ingest robustness is not product-ready.
 
-## Milestone 6: Static Viewer Quality
+## Milestone 7: Static Viewer Quality
 
 - Add the actual static HTML viewer and package layout.
 - Keep viewer logic intentionally simple:
@@ -164,6 +179,7 @@ The final product is not just “graph JSON exists”; it is “a person can ope
 - Evaluation tests:
   - fixture documents with expected graph assertions
   - regression cases across chunk boundaries
+  - opt-in real-provider gold-eval target remains separate from default unit tests until prompt behavior is stable
 - Viewer smoke test:
   - static bundle is structurally complete and can be served locally
 
