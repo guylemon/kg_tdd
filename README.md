@@ -15,6 +15,7 @@ Each successful run writes an output directory containing:
   - `chunk-list.json`
   - `raw-provider-responses.json`
   - `extracted-mentions.json`
+  - `run-metadata.json`
 
 This output layout is the current artifact contract for the CLI.
 
@@ -98,7 +99,7 @@ export KG_PROVIDER_API_KEY=your-token
 
 ## Logging
 
-The CLI uses `env_logger`, so log output is controlled through `RUST_LOG` and is written to stderr.
+The CLI uses `tracing` with JSON output, so log output is controlled through `RUST_LOG` and is written to stderr.
 
 Enable normal debug logging:
 
@@ -156,6 +157,7 @@ Source viewer assets live under [assets/viewer](/home/eci/dev/kg_tdd/assets/view
 - `chunk-list.json` captures the partitioned chunk list
 - `raw-provider-responses.json` captures the raw provider payload for each schema call
 - `extracted-mentions.json` captures entity and relationship mentions before consolidation
+- `run-metadata.json` captures run context, status, and summary counts for the execution
 
 ## Local Viewing
 

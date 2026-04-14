@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex, mpsc};
 
-use log::debug;
 use text_splitter::{ChunkConfig, TextSplitter};
 use tokenizers::Tokenizer;
+use tracing::debug;
 
 use crate::application::{AppError, Chunk, ExtractionOutcome, IngestConfig, MaxConcurrency};
 use crate::application::{CapturedProviderResponse, ProviderResponseKind};

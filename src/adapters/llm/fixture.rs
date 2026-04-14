@@ -1,8 +1,8 @@
 use std::any::TypeId;
 
-use log::debug;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use tracing::debug;
 
 use crate::application::AppError;
 use crate::domain::NonEmptyString;

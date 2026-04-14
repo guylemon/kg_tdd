@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use log::debug;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use tracing::debug;
 use ureq::Agent;
 
 use crate::application::{AppError, ProviderConfig};

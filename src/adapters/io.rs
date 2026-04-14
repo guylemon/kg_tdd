@@ -3,9 +3,9 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-use log::debug;
+use tracing::debug;
 
-use crate::application::{AppError, IngestionTrace};
+use crate::application::{AppError, IngestionTrace, RunMetadata};
 use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -65,10 +65,12 @@ impl GraphArtifactSink for FileGraphArtifactSink {
         &self,
         output_dir: &Path,
         trace: &IngestionTrace,
+        metadata: &RunMetadata,
     ) -> Result<(), AppError> {
         let debug_dir = output_dir.join("debug");
         fs::create_dir_all(&debug_dir).map_err(|_| AppError::create_output_dir(&debug_dir))?;
 
+        write_json_file(&debug_dir.join("run-metadata.json"), metadata)?;
         write_json_file(&debug_dir.join("chunk-list.json"), &trace.chunks)?;
         write_json_file(
             &debug_dir.join("raw-provider-responses.json"),
@@ -158,8 +160,10 @@ mod tests {
         FileDocumentSource, FileGraphArtifactSink, document_id_from_path, viewer_asset_path,
     };
     use crate::application::{
-        ChunkExtractionTrace, ChunkTrace, EntityMentionTrace, EvidenceTrace, IngestionTrace,
-        ProviderResponseKind, ProviderResponseTrace, RelationshipMentionTrace,
+        ChunkExtractionTrace, ChunkTrace, EntityMentionTrace, EvidenceTrace, IngestConfig,
+        IngestionTrace, MaxConcurrency, ProviderConfig, ProviderResponseKind,
+        ProviderResponseTrace, RelationshipMentionTrace, RunContext, RunMode, RunStatus,
+        utc_now_rfc3339,
     };
     use crate::domain::KnowledgeGraph;
     use crate::ports::{DocumentSource, GraphArtifactSink};
@@ -236,17 +240,24 @@ mod tests {
         let output_dir = dir.join("artifacts");
 
         FileGraphArtifactSink
-            .write_debug_artifacts(&output_dir, &sample_trace())
+            .write_debug_artifacts(&output_dir, &sample_trace(), &sample_metadata())
             .expect("write debug artifacts");
 
         let debug_dir = output_dir.join("debug");
+        let metadata_path = debug_dir.join("run-metadata.json");
         let chunks_path = debug_dir.join("chunk-list.json");
         let responses_path = debug_dir.join("raw-provider-responses.json");
         let mentions_path = debug_dir.join("extracted-mentions.json");
 
+        assert!(metadata_path.is_file());
         assert!(chunks_path.is_file());
         assert!(responses_path.is_file());
         assert!(mentions_path.is_file());
+        assert!(
+            fs::read_to_string(metadata_path)
+                .expect("metadata")
+                .contains("\"run_id\"")
+        );
         assert!(
             fs::read_to_string(chunks_path)
                 .expect("chunks")
@@ -262,6 +273,19 @@ mod tests {
                 .expect("mentions")
                 .contains("\"Alice\"")
         );
+    }
+
+    fn sample_metadata() -> crate::application::RunMetadata {
+        let context = RunContext::new(
+            RunMode::Cli,
+            PathBuf::from("fixtures/input.txt"),
+            Some(PathBuf::from("out")),
+            &ProviderConfig::default(),
+            &IngestConfig::default(),
+            MaxConcurrency(1),
+        );
+
+        context.finish(None, None, utc_now_rfc3339(), RunStatus::Success, None)
     }
 
     #[test]

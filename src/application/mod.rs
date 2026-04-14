@@ -8,5 +8,6 @@ pub(crate) use types::{
     CapturedProviderResponse, Chunk, ChunkExtractionTrace, ChunkTrace, EntityMentionTrace,
     EvidenceTrace, ExtractionOutcome, IngestConfig, IngestionTrace, MaxConcurrency, ProviderConfig,
     ProviderMode, ProviderResponseKind, ProviderResponseTrace, RelationshipMentionTrace, RunConfig,
-    TraceableIngestResult,
+    RunContext, RunErrorMetadata, RunMetadata, RunMode, RunStatus, TraceableIngestResult,
+    utc_now_rfc3339,
 };

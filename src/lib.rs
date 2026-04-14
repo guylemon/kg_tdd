@@ -5,7 +5,8 @@ mod domain;
 pub mod eval_support;
 mod ports;
 
-use log::debug;
+use tracing::debug;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::adapters::{
     CliArgs, ConfiguredSchemaLlmClient, FileDocumentSource, FileGraphArtifactSink,
@@ -15,15 +16,15 @@ use crate::app::App;
 
 #[must_use]
 pub fn run_cli() -> i32 {
-    init_logger();
+    init_tracing();
 
     match CliArgs::parse() {
         Ok(args) => {
             debug!(
-                "parsed CLI args: provider_mode={:?}, input_path={}, output_dir={}",
-                args.run_config.provider.mode,
-                args.run_config.input_path.display(),
-                args.run_config.output_dir.display()
+                provider_mode = ?args.run_config.provider.mode,
+                input_path = %args.run_config.input_path.display(),
+                output_dir = %args.run_config.output_dir.display(),
+                "parsed CLI args"
             );
             let llm_client = match ConfiguredSchemaLlmClient::from_config(&args.run_config.provider)
             {
@@ -55,8 +56,12 @@ pub fn run_cli() -> i32 {
     }
 }
 
-fn init_logger() {
-    let env = env_logger::Env::default().default_filter_or("off");
-    let mut builder = env_logger::Builder::from_env(env);
-    let _ = builder.try_init();
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+    let subscriber = tracing_subscriber::registry().with(filter).with(
+        tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(std::io::stderr),
+    );
+    let _ = subscriber.try_init();
 }

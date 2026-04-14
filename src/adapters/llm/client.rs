@@ -1,7 +1,7 @@
 use serde::de::DeserializeOwned;
 
-use log::debug;
 use schemars::JsonSchema;
+use tracing::debug;
 
 use crate::application::{AppError, ProviderConfig, ProviderMode};
 use crate::domain::NonEmptyString;
