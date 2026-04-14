@@ -199,6 +199,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_input_file() {
+        let dir = temp_dir("missing_document");
+        let input_path = dir.join("missing.txt");
+
+        let err = FileDocumentSource
+            .read_document(&input_path)
+            .expect_err("missing file should fail");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "input path is invalid or does not exist: {}",
+                input_path.display()
+            )
+        );
+    }
+
+    #[test]
     fn writes_graph_artifact_bundle_to_output_directory() {
         let dir = temp_dir("write_graph");
         let output_dir = dir.join("artifacts");

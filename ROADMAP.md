@@ -98,12 +98,15 @@ Why this matters:
     - Domain-graph comparison scaffolding now exists, but it is not yet verified as a stable pass/fail contract under live-provider behavior.
   - [ ] end-to-end regression detection
     - Current evaluation stops at normalized domain-graph comparison. This is sufficient as a v1 working boundary, but it is too early to decide whether it is the final end-to-end regression boundary for the product.
-- [ ] Add traceable intermediate artifacts for debugging:
-  - [ ] chunk list
-  - [ ] raw provider responses
-  - [ ] extracted mentions before consolidation
-- Add structured logging and run metadata.
-- Add deterministic test coverage for failure paths, not only happy paths.
+- [x] Add traceable intermediate artifacts for debugging:
+  - [x] chunk list
+  - [x] raw provider responses
+  - [x] extracted mentions before consolidation
+  - The traced ingestion pipeline now carries chunk metadata, per-schema raw provider payloads, and pre-consolidation extracted mentions through a shared application result.
+  - Successful CLI runs now emit these artifacts under `debug/` as `chunk-list.json`, `raw-provider-responses.json`, and `extracted-mentions.json` alongside the graph bundle.
+  - The gold evaluation harness now reuses the traced pipeline and writes a temporary debug artifact bundle on mismatch, reporting the artifact path in the failure output.
+- [x]  Add structured logging and run metadata.
+- [x] Add deterministic test coverage for failure paths, not only happy paths.
 
 Why this matters:
 The project can run, but it cannot yet measure quality or safely evolve.

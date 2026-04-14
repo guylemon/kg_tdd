@@ -260,6 +260,7 @@ fn log_run_failed(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -291,6 +292,14 @@ mod tests {
         }
     }
 
+    struct FailingDocumentSource;
+
+    impl DocumentSource for FailingDocumentSource {
+        fn read_document(&self, input_path: &Path) -> Result<Document, AppError> {
+            Err(AppError::invalid_input_path(input_path))
+        }
+    }
+
     #[derive(Default)]
     struct RecordingGraphSink {
         writes: std::sync::Mutex<Vec<(PathBuf, KnowledgeGraph)>>,
@@ -318,6 +327,41 @@ mod tests {
                 metadata.clone(),
             ));
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingGraphSink {
+        graph_calls: Cell<usize>,
+        debug_calls: Cell<usize>,
+        fail_graph: bool,
+        fail_debug: bool,
+    }
+
+    impl GraphArtifactSink for &FailingGraphSink {
+        fn write_graph(&self, output_dir: &Path, _graph: &KnowledgeGraph) -> Result<(), AppError> {
+            self.graph_calls.set(self.graph_calls.get() + 1);
+            if self.fail_graph {
+                Err(AppError::write_output(output_dir.join("graph.json")))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn write_debug_artifacts(
+            &self,
+            output_dir: &Path,
+            _trace: &IngestionTrace,
+            _metadata: &RunMetadata,
+        ) -> Result<(), AppError> {
+            self.debug_calls.set(self.debug_calls.get() + 1);
+            if self.fail_debug {
+                Err(AppError::write_output(
+                    output_dir.join("debug").join("run-metadata.json"),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -379,6 +423,141 @@ mod tests {
         assert!(matches!(debug_writes[0].2.status, RunStatus::Success));
         assert_eq!(debug_writes[0].2.mode.label(), "cli");
         assert_eq!(debug_writes[0].2.output_dir, Some(PathBuf::from("out")));
+    }
+
+    #[test]
+    fn returns_document_load_error_without_writing_artifacts() {
+        let sink = FailingGraphSink::default();
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("missing/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
+            },
+            FailingDocumentSource,
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("document load should fail");
+
+        assert!(matches!(err, AppError::InvalidInputPath(_)));
+        assert_eq!(sink.graph_calls.get(), 0);
+        assert_eq!(sink.debug_calls.get(), 0);
+    }
+
+    #[test]
+    fn returns_ingestion_error_without_writing_artifacts() {
+        let sink = FailingGraphSink::default();
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(0),
+                provider: ProviderConfig::default(),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("ingestion should fail");
+
+        assert!(matches!(err, AppError::ExtractChunk));
+        assert_eq!(sink.graph_calls.get(), 0);
+        assert_eq!(sink.debug_calls.get(), 0);
+    }
+
+    #[test]
+    fn stops_before_debug_artifacts_when_graph_write_fails() {
+        let sink = FailingGraphSink {
+            fail_graph: true,
+            ..Default::default()
+        };
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("graph write should fail");
+
+        assert!(matches!(err, AppError::WriteOutput { .. }));
+        assert_eq!(sink.graph_calls.get(), 1);
+        assert_eq!(sink.debug_calls.get(), 0);
+    }
+
+    #[test]
+    fn returns_debug_artifact_error_after_graph_write_succeeds() {
+        let sink = FailingGraphSink {
+            fail_debug: true,
+            ..Default::default()
+        };
+        let app = App::new(
+            RunConfig {
+                ingest: IngestConfig {
+                    tokenizer_name: String::from("test-wordlevel"),
+                    max_chunk_tokens: 32,
+                },
+                input_path: PathBuf::from("fixtures/input.txt"),
+                output_dir: PathBuf::from("out"),
+                max_concurrency: MaxConcurrency(1),
+                provider: ProviderConfig::default(),
+            },
+            StubDocumentSource {
+                document: Document {
+                    id: DocumentId(String::from("doc-1")),
+                    text: NonEmptyString(String::from(
+                        "An apple is a red fruit that grows on trees",
+                    )),
+                },
+            },
+            &sink,
+            FakeSchemaLlmClient,
+            StaticTokenizerSource::new(build_test_tokenizer()),
+        );
+
+        let err = app.run().expect_err("debug artifact write should fail");
+
+        assert!(matches!(err, AppError::WriteOutput { .. }));
+        assert_eq!(sink.graph_calls.get(), 1);
+        assert_eq!(sink.debug_calls.get(), 1);
     }
 
     #[test]
