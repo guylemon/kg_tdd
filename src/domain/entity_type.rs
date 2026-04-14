@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// The supported Entity types for this application
 // TODO remove unused allow rule
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 pub(crate) enum EntityType {
     /// Theoretical ideas, methodologies, approaches
     #[allow(unused)]
