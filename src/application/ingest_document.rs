@@ -52,7 +52,7 @@ mod tests {
     use crate::domain::{
         AnnotatedText, Document, DocumentId, EdgeDescription, EntityMention, EntityName,
         EntityType, Fact, FactualClaim, NodeDescription, NonEmptyString, RelationshipMention,
-        RelationshipType, TextUnit, TokenCount,
+        RelationshipType, TextUnit, TokenCount, edge_id_for_relationship, node_id_for_entity,
     };
     use crate::ports::{ChunkExtractor, DocumentPartitioner};
     use std::cell::RefCell;
@@ -137,8 +137,14 @@ mod tests {
                     },
                 ],
                 relationships: vec![RelationshipMention {
-                    source: crate::domain::NodeId(String::from("Alice")),
-                    target: crate::domain::NodeId(String::from("Bob")),
+                    source: node_id_for_entity(
+                        &EntityType::Person,
+                        &EntityName(String::from("Alice")),
+                    ),
+                    target: node_id_for_entity(
+                        &EntityType::Person,
+                        &EntityName(String::from("Bob")),
+                    ),
                     description: EdgeDescription(String::from("knows")),
                     evidence: vec![FactualClaim {
                         fact: Fact(String::from("Alice met Bob")),
@@ -162,8 +168,164 @@ mod tests {
         assert_eq!(graph.nodes.len(), 1);
         assert_eq!(graph.nodes[0].mentions.len(), 2);
         assert_eq!(graph.edges.len(), 1);
+        assert_eq!(
+            graph.edges[0].id.0,
+            edge_id_for_relationship(
+                &node_id_for_entity(&EntityType::Person, &EntityName(String::from("Alice"))),
+                &node_id_for_entity(&EntityType::Person, &EntityName(String::from("Bob"))),
+                &RelationshipType::IsA,
+            )
+            .0
+        );
         assert_eq!(graph.edges[0].evidence.len(), 1);
         assert_eq!(graph.edges[0].evidence[0].citation_text, "Alice met Bob");
+    }
+
+    #[test]
+    fn consolidates_relationship_endpoints_across_canonical_alias_variants() {
+        let chunks = vec![sample_chunk(), sample_chunk()];
+        let text_unit = alias_variants_text_unit();
+        let extractor = FakeExtractor {
+            chunks,
+            extractions: RefCell::new(vec![
+                Ok(alias_variant_extraction(
+                    "AT&T Incorporated",
+                    "Acme Company",
+                    text_unit.clone(),
+                )),
+                Ok(alias_variant_extraction(
+                    "AT and T Inc.",
+                    "Acme Co.",
+                    text_unit.clone(),
+                )),
+            ]),
+        };
+        let service = IngestDocumentService::new(extractor);
+
+        let graph = service
+            .execute(&Document {
+                id: DocumentId(String::from("doc-1")),
+                text: NonEmptyString(String::from("AT&T partnered with Acme")),
+            })
+            .expect("graph");
+
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(
+            graph.edges[0].id.0,
+            edge_id_for_relationship(
+                &node_id_for_entity(
+                    &EntityType::Organization,
+                    &EntityName(String::from("AT&T Incorporated")),
+                ),
+                &node_id_for_entity(
+                    &EntityType::Organization,
+                    &EntityName(String::from("Acme Company")),
+                ),
+                &RelationshipType::IsA,
+            )
+            .0
+        );
+        assert_eq!(graph.edges[0].weight.0, 2);
+        assert_eq!(graph.edges[0].source.0, "node:organization:at-and-t-inc");
+        assert_eq!(graph.edges[0].target.0, "node:organization:acme-co");
+    }
+
+    #[test]
+    fn keeps_distinct_edges_for_same_endpoints_when_relationship_types_differ() {
+        let chunk = sample_chunk();
+        let text_unit = TextUnit {
+            document_id: DocumentId(String::from("doc-1")),
+            text: AnnotatedText(String::from("Apple and trees are related in two ways")),
+            token_count: TokenCount(9),
+        };
+        let apple_id = node_id_for_entity(&EntityType::Product, &EntityName(String::from("apple")));
+        let tree_id = node_id_for_entity(&EntityType::Lifeform, &EntityName(String::from("trees")));
+        let extractor = FakeExtractor {
+            chunks: vec![chunk],
+            extractions: RefCell::new(vec![Ok(ExtractionOutcome {
+                entities: vec![
+                    EntityMention {
+                        description: NodeDescription(String::from("product")),
+                        entity_type: EntityType::Product,
+                        name: EntityName(String::from("apple")),
+                        source: text_unit.clone(),
+                    },
+                    EntityMention {
+                        description: NodeDescription(String::from("lifeform")),
+                        entity_type: EntityType::Lifeform,
+                        name: EntityName(String::from("trees")),
+                        source: text_unit.clone(),
+                    },
+                ],
+                relationships: vec![
+                    RelationshipMention {
+                        source: apple_id.clone(),
+                        target: tree_id.clone(),
+                        description: EdgeDescription(String::from("is associated with")),
+                        evidence: vec![FactualClaim {
+                            fact: Fact(String::from("Apple is associated with trees")),
+                            citation_text: String::from("Apple and trees are related"),
+                            citation: text_unit.clone(),
+                            status: crate::domain::EpistemicStatus::Probable,
+                        }],
+                        relationship_type: RelationshipType::IsA,
+                    },
+                    RelationshipMention {
+                        source: apple_id,
+                        target: tree_id,
+                        description: EdgeDescription(String::from("grows on")),
+                        evidence: vec![FactualClaim {
+                            fact: Fact(String::from("An apple grows on trees")),
+                            citation_text: String::from("Apple and trees are related"),
+                            citation: text_unit.clone(),
+                            status: crate::domain::EpistemicStatus::Probable,
+                        }],
+                        relationship_type: RelationshipType::GrowsOn,
+                    },
+                ],
+            })]),
+        };
+        let service = IngestDocumentService::new(extractor);
+
+        let graph = service
+            .execute(&Document {
+                id: DocumentId(String::from("doc-1")),
+                text: NonEmptyString(String::from("Apple and trees are related in two ways")),
+            })
+            .expect("graph");
+
+        assert_eq!(graph.edges.len(), 2);
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.edge_type == RelationshipType::IsA)
+        );
+        assert!(graph.edges.iter().any(|edge| {
+            edge.id.0
+                == edge_id_for_relationship(
+                    &node_id_for_entity(&EntityType::Product, &EntityName(String::from("apple"))),
+                    &node_id_for_entity(&EntityType::Lifeform, &EntityName(String::from("trees"))),
+                    &RelationshipType::IsA,
+                )
+                .0
+        }));
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.edge_type == RelationshipType::GrowsOn)
+        );
+        assert!(graph.edges.iter().any(|edge| {
+            edge.id.0
+                == edge_id_for_relationship(
+                    &node_id_for_entity(&EntityType::Product, &EntityName(String::from("apple"))),
+                    &node_id_for_entity(&EntityType::Lifeform, &EntityName(String::from("trees"))),
+                    &RelationshipType::GrowsOn,
+                )
+                .0
+        }));
     }
 
     fn sample_chunk() -> Chunk {
@@ -171,6 +333,66 @@ mod tests {
             document_id: DocumentId(String::from("doc-1")),
             text: NonEmptyString(String::from("Alice met Bob")),
             token_count: TokenCount(4),
+        }
+    }
+
+    fn alias_variants_text_unit() -> TextUnit {
+        TextUnit {
+            document_id: DocumentId(String::from("doc-1")),
+            text: AnnotatedText(String::from("AT&T partnered with Acme")),
+            token_count: TokenCount(5),
+        }
+    }
+
+    fn alias_variant_extraction(
+        source_name: &str,
+        target_name: &str,
+        text_unit: TextUnit,
+    ) -> ExtractionOutcome {
+        ExtractionOutcome {
+            entities: vec![
+                organization_mention(source_name, text_unit.clone()),
+                organization_mention(target_name, text_unit.clone()),
+            ],
+            relationships: vec![organization_relationship_mention(
+                source_name,
+                target_name,
+                text_unit,
+            )],
+        }
+    }
+
+    fn organization_mention(name: &str, source: TextUnit) -> EntityMention {
+        EntityMention {
+            description: NodeDescription(String::from("org")),
+            entity_type: EntityType::Organization,
+            name: EntityName(String::from(name)),
+            source,
+        }
+    }
+
+    fn organization_relationship_mention(
+        source_name: &str,
+        target_name: &str,
+        citation: TextUnit,
+    ) -> RelationshipMention {
+        RelationshipMention {
+            source: node_id_for_entity(
+                &EntityType::Organization,
+                &EntityName(String::from(source_name)),
+            ),
+            target: node_id_for_entity(
+                &EntityType::Organization,
+                &EntityName(String::from(target_name)),
+            ),
+            description: EdgeDescription(String::from("partnered with")),
+            evidence: vec![FactualClaim {
+                fact: Fact(String::from("AT&T partnered with Acme")),
+                citation_text: String::from("AT&T partnered with Acme"),
+                citation,
+                status: crate::domain::EpistemicStatus::Probable,
+            }],
+            relationship_type: RelationshipType::IsA,
         }
     }
 }

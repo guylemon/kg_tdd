@@ -27,6 +27,7 @@ struct CyEdge {
 struct CyNodeData {
     id: NodeId,
     name: EntityName,
+    aliases: Vec<EntityName>,
     entity_type: EntityType,
     description: NodeDescription,
     mentions: Vec<TextUnit>,
@@ -35,8 +36,9 @@ struct CyNodeData {
 impl From<GraphNode> for CyNodeData {
     fn from(node: GraphNode) -> Self {
         Self {
-            id: make_node_id(&node.name),
+            id: node.id,
             name: node.name,
+            aliases: node.aliases,
             entity_type: node.entity_type,
             description: node.description,
             mentions: node.mentions,
@@ -57,9 +59,8 @@ struct CyEdgeData {
 
 impl From<GraphEdge> for CyEdgeData {
     fn from(edge: GraphEdge) -> Self {
-        let id = make_edge_id(&edge.source, &edge.target);
         Self {
-            id,
+            id: edge.id,
             source: edge.source,
             target: edge.target,
             edge_type: edge.edge_type,
@@ -97,24 +98,68 @@ fn convert_kg_to_cytoscape_elements(kg: &KnowledgeGraph) -> CytoscapeElements {
     CytoscapeElements { nodes, edges }
 }
 
-fn make_node_id(name: &EntityName) -> NodeId {
-    NodeId(format!("node:{}", slugify(&name.0)))
-}
+#[cfg(test)]
+mod tests {
+    use super::CytoscapeJsonProjector;
+    use crate::domain::{
+        EdgeDescription, EdgeWeight, EntityName, EntityType, GraphEdge, GraphNode, KnowledgeGraph,
+        NodeDescription, NodeId, RelationshipType, edge_id_for_relationship,
+    };
 
-fn make_edge_id(source: &NodeId, target: &NodeId) -> EdgeId {
-    EdgeId(format!("edge:{}->{}", source.0, target.0))
-}
+    #[test]
+    fn projects_distinct_edge_ids_for_same_endpoints_with_different_types() {
+        let graph = KnowledgeGraph {
+            nodes: vec![
+                GraphNode {
+                    id: NodeId(String::from("node:food:apple")),
+                    name: EntityName(String::from("apple")),
+                    aliases: Vec::new(),
+                    entity_type: EntityType::Product,
+                    description: NodeDescription(String::from("food")),
+                    mentions: Vec::new(),
+                },
+                GraphNode {
+                    id: NodeId(String::from("node:plant:tree")),
+                    name: EntityName(String::from("tree")),
+                    aliases: Vec::new(),
+                    entity_type: EntityType::Lifeform,
+                    description: NodeDescription(String::from("plant")),
+                    mentions: Vec::new(),
+                },
+            ],
+            edges: vec![
+                GraphEdge {
+                    id: edge_id_for_relationship(
+                        &NodeId(String::from("node:food:apple")),
+                        &NodeId(String::from("node:plant:tree")),
+                        &RelationshipType::GrowsOn,
+                    ),
+                    source: NodeId(String::from("node:food:apple")),
+                    target: NodeId(String::from("node:plant:tree")),
+                    edge_type: RelationshipType::GrowsOn,
+                    description: EdgeDescription(String::from("grows on")),
+                    evidence: Vec::new(),
+                    weight: EdgeWeight(1),
+                },
+                GraphEdge {
+                    id: edge_id_for_relationship(
+                        &NodeId(String::from("node:food:apple")),
+                        &NodeId(String::from("node:plant:tree")),
+                        &RelationshipType::IsA,
+                    ),
+                    source: NodeId(String::from("node:food:apple")),
+                    target: NodeId(String::from("node:plant:tree")),
+                    edge_type: RelationshipType::IsA,
+                    description: EdgeDescription(String::from("is related to")),
+                    evidence: Vec::new(),
+                    weight: EdgeWeight(1),
+                },
+            ],
+        };
 
-fn slugify(value: &str) -> String {
-    value
-        .to_lowercase()
-        .chars()
-        .map(|char| {
-            if char.is_ascii_alphanumeric() {
-                char
-            } else {
-                '-'
-            }
-        })
-        .collect()
+        let projected = CytoscapeJsonProjector::project(&graph).expect("projection succeeds");
+
+        assert!(projected.contains("\"id\":\"edge:node:food:apple->node:plant:tree:grows-on\""));
+        assert!(projected.contains("\"id\":\"edge:node:food:apple->node:plant:tree:is-a\""));
+    }
 }

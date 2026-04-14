@@ -74,14 +74,16 @@ Provider work now includes deterministic fixture parity, config handling, and op
 
 ## Milestone 3: Graph Semantics and Consolidation
 
-- Replace current minimal dedupe by raw entity name with stronger node identity rules.
-- Add normalization and alias handling for common variants.
-- Revisit relationship consolidation so edges are not keyed only by `(source, target)` when relationship type or meaning differs.
-- Strengthen evidence handling:
-  - citation provenance
-  - epistemic status policy
-  - duplicate evidence merging
-- Make node and edge IDs domain-derived and stable under repeated runs.
+- [x] Replace current minimal dedupe by raw entity name with stronger node identity rules.
+- [x] Add normalization and alias handling for common variants.
+  - Added a dedicated domain canonicalization layer with conservative normalization, `&`/`and` handling, and curated organization suffix variants.
+- [x] Revisit relationship consolidation so edges are not keyed only by `(source, target)` when relationship type or meaning differs.
+  - Relationship consolidation now keys edges by `(source, target, relationship_type)`, preserving distinct edge types between the same nodes while still merging same-type duplicates.
+- [x] Strengthen evidence handling:
+  - Citation provenance is now preserved at the source-chunk `TextUnit` level for accepted evidence.
+  - Epistemic status policy is now explicit and centralized: grounded evidence defaults to `Probable`.
+  - Duplicate evidence is now merged during relationship consolidation using normalized fact/citation text plus chunk provenance.
+- [x] Make node and edge IDs domain-derived and stable under repeated runs.
 
 Why this matters:
 “Stronger semantics” should be split into explicit subproblems: identity, normalization, and evidence policy.
