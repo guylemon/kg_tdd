@@ -2,7 +2,8 @@ use tracing::debug;
 
 use crate::adapters::{ParallelChunkExtractor, SchemaLlmClient, TokenizerSource};
 use crate::application::{
-    AppError, IngestDocumentService, RunConfig, RunContext, RunMode, RunStatus, utc_now_rfc3339,
+    AppError, IngestConfig, IngestDocumentService, RunConfig, RunContext, RunMode, RunStatus,
+    utc_now_rfc3339,
 };
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
@@ -85,7 +86,7 @@ fn build_run_context(config: &RunConfig) -> RunContext {
 }
 
 fn build_extractor<C, T>(
-    config: crate::application::IngestConfig,
+    config: IngestConfig,
     max_concurrency: crate::application::MaxConcurrency,
     llm_client: C,
     tokenizer_source: &T,
@@ -370,6 +371,7 @@ mod tests {
         let config = IngestConfig {
             tokenizer_name: String::from("test-wordlevel"),
             max_chunk_tokens: 32,
+            prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
         };
         let sink = RecordingGraphSink::default();
         let app = App::new(
@@ -433,6 +435,7 @@ mod tests {
                 ingest: IngestConfig {
                     tokenizer_name: String::from("test-wordlevel"),
                     max_chunk_tokens: 32,
+                    prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
                 },
                 input_path: PathBuf::from("missing/input.txt"),
                 output_dir: PathBuf::from("out"),
@@ -460,6 +463,7 @@ mod tests {
                 ingest: IngestConfig {
                     tokenizer_name: String::from("test-wordlevel"),
                     max_chunk_tokens: 32,
+                    prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
                 },
                 input_path: PathBuf::from("fixtures/input.txt"),
                 output_dir: PathBuf::from("out"),
@@ -497,6 +501,7 @@ mod tests {
                 ingest: IngestConfig {
                     tokenizer_name: String::from("test-wordlevel"),
                     max_chunk_tokens: 32,
+                    prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
                 },
                 input_path: PathBuf::from("fixtures/input.txt"),
                 output_dir: PathBuf::from("out"),
@@ -534,6 +539,7 @@ mod tests {
                 ingest: IngestConfig {
                     tokenizer_name: String::from("test-wordlevel"),
                     max_chunk_tokens: 32,
+                    prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
                 },
                 input_path: PathBuf::from("fixtures/input.txt"),
                 output_dir: PathBuf::from("out"),
@@ -565,6 +571,7 @@ mod tests {
         let config = IngestConfig {
             tokenizer_name: String::from("test-wordlevel"),
             max_chunk_tokens: 12,
+            prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
         };
         let sink = RecordingGraphSink::default();
         let app = App::new(
@@ -606,6 +613,7 @@ mod tests {
         let config = IngestConfig {
             tokenizer_name: String::from("test-wordlevel"),
             max_chunk_tokens: 32,
+            prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
         };
         let app = App::new(
             RunConfig {

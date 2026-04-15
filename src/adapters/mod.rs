@@ -3,6 +3,7 @@ mod cytoscape;
 mod extraction;
 mod io;
 mod llm;
+mod prompt;
 mod tokenizer;
 
 pub(crate) use cli::CliArgs;

@@ -27,6 +27,7 @@ impl CliArgs {
         let mut provider_mode = None;
         let mut provider_base_url = None;
         let mut provider_model = None;
+        let mut prompt_templates_dir = None;
 
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -49,6 +50,13 @@ impl CliArgs {
                 "--provider-model" => {
                     set_string_flag("--provider-model", &mut provider_model, args.next())?;
                 }
+                "--prompt-templates-dir" => {
+                    set_path_flag(
+                        "--prompt-templates-dir",
+                        &mut prompt_templates_dir,
+                        args.next(),
+                    )?;
+                }
                 other => {
                     return Err(AppError::usage(format!(
                         "unknown argument: {other}\n\n{}",
@@ -67,13 +75,14 @@ impl CliArgs {
                 usage()
             ))
         })?;
-
         Ok(Self {
             run_config: RunConfig {
                 ingest: IngestConfig {
                     tokenizer_name: tokenizer_name
                         .unwrap_or_else(|| String::from("bert-base-cased")),
                     max_chunk_tokens: max_chunk_tokens.unwrap_or(128),
+                    prompt_templates_dir: prompt_templates_dir
+                        .unwrap_or_else(IngestConfig::default_prompt_templates_dir),
                 },
                 input_path,
                 output_dir,
@@ -176,13 +185,15 @@ fn parse_mode(raw: &str) -> Result<ProviderMode, AppError> {
 }
 
 fn usage() -> &'static str {
-    "Usage: cargo run -- --input <PATH> --output-dir <PATH> [--tokenizer <NAME>] [--max-chunk-tokens <N>] [--provider-mode <fixture|openai-compatible>] [--provider-base-url <URL>] [--provider-model <NAME>]"
+    "Usage: cargo run -- --input <PATH> --output-dir <PATH> [--tokenizer <NAME>] [--max-chunk-tokens <N>] [--provider-mode <fixture|openai-compatible>] [--provider-base-url <URL>] [--provider-model <NAME>] [--prompt-templates-dir <PATH>]"
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
+
+    use crate::application::IngestConfig;
 
     use super::CliArgs;
 
@@ -223,6 +234,10 @@ mod tests {
             parsed.run_config.provider.model.as_deref(),
             Some("llama3.2")
         );
+        assert_eq!(
+            parsed.run_config.ingest.prompt_templates_dir,
+            IngestConfig::default_prompt_templates_dir()
+        );
     }
 
     #[test]
@@ -244,6 +259,29 @@ mod tests {
         );
         assert_eq!(parsed.run_config.provider.base_url, None);
         assert_eq!(parsed.run_config.provider.model, None);
+        assert_eq!(
+            parsed.run_config.ingest.prompt_templates_dir,
+            IngestConfig::default_prompt_templates_dir()
+        );
+    }
+
+    #[test]
+    fn parses_prompt_templates_dir() {
+        let args = vec![
+            OsString::from("--input"),
+            OsString::from("input.txt"),
+            OsString::from("--output-dir"),
+            OsString::from("out"),
+            OsString::from("--prompt-templates-dir"),
+            OsString::from("templates"),
+        ];
+
+        let parsed = CliArgs::parse_from(args).expect("cli args");
+
+        assert_eq!(
+            parsed.run_config.ingest.prompt_templates_dir,
+            PathBuf::from("templates")
+        );
     }
 
     #[test]
