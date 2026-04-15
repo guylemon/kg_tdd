@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+
 chat_url="${KG_PROVIDER_CHAT_URL:-http://studio:11434/v1/chat/completions}"
 model="${KG_PROVIDER_MODEL:-gemma4:e4b}"
-system_prompt_path="${KG_ENTITY_SYSTEM_PROMPT_PATH:-assets/prompts/entity.system.txt}"
-input_path="${1:-${KG_ENTITY_INPUT_PATH:-tests/fixtures/gold/seed/input.txt}}"
+system_prompt_path="${KG_ENTITY_SYSTEM_PROMPT_PATH:-$repo_root/assets/prompts/entity.system.txt}"
+input_path="${1:-${KG_ENTITY_INPUT_PATH:-$repo_root/tests/fixtures/gold/seed/input.txt}}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required" >&2
@@ -84,7 +87,7 @@ jq -n \
         }
       }
     },
-    max_tokens: 512
+    max_tokens: 4096
   }' \
   | curl -sS "$chat_url" \
       -H 'Content-Type: application/json' \

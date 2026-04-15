@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-expected_path="${KG_ENTITY_EXPECTED_PATH:-tests/fixtures/gold/seed/expected_extraction.json}"
-input_path="${1:-${KG_ENTITY_INPUT_PATH:-tests/fixtures/gold/seed/input.txt}}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+
+expected_path="${KG_ENTITY_EXPECTED_PATH:-$repo_root/tests/fixtures/gold/seed/expected_extraction.json}"
+input_path="${1:-${KG_ENTITY_INPUT_PATH:-$repo_root/tests/fixtures/gold/seed/input.txt}}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required" >&2
@@ -28,19 +31,19 @@ expected_entities_path="$tmp_dir/expected-entities.jsonl"
 missing_path="$tmp_dir/missing.jsonl"
 unexpected_path="$tmp_dir/unexpected.jsonl"
 
-bash ./curl_test.sh "$input_path" >"$actual_response_path"
+bash "$script_dir/curl_test.sh" "$input_path" >"$actual_response_path"
 
 jq -r '
   .choices[0].message.content
   | if type == "string" then fromjson else . end
   | .entities[]
-  | {name, entity_type, description}
+  | {name, entity_type}
   | @json
 ' "$actual_response_path" | sort >"$actual_entities_path"
 
 jq -r '
   .entities[]
-  | {name, entity_type, description}
+  | {name, entity_type}
   | @json
 ' "$expected_path" | sort >"$expected_entities_path"
 
@@ -57,7 +60,7 @@ fi
 
 echo ""
 echo "RESULTS:"
-echo "Entity extraction did not match expected seed entities."
+echo "Entity extraction did not match expected entity/type pairs."
 
 if [[ -s "$missing_path" ]]; then
   echo

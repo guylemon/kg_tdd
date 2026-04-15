@@ -238,6 +238,8 @@ Convenience scripts:
 
 Each gold fixture may also include `expected_extraction.json` for pre-consolidation expectations and an optional `config.json` for scenario-specific chunking.
 
+Lightweight prompt and model smoke-test helpers live under [scripts/diagnostics](/home/eci/dev/kg_tdd/scripts/diagnostics:1). They are useful for fast local troubleshooting, but they are not authoritative evaluation because they bypass Rust-side normalization and consolidation logic.
+
 ## Project Status
 
 This repository is being developed incrementally against [ROADMAP.md](/home/eci/dev/kg_tdd/ROADMAP.md:1).

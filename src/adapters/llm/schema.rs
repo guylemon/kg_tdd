@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use crate::application::AppError;
 use crate::domain::{EntityType, NonEmptyString, RelationshipType};
 
-const PROVIDER_MAX_TOKENS: u16 = 512;
+const PROVIDER_MAX_TOKENS: u16 = 4096;
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
