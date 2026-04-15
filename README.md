@@ -158,6 +158,7 @@ Source viewer assets live under [assets/viewer](/home/eci/dev/kg_tdd/assets/view
 - `raw-provider-responses.json` captures the raw provider payload for each schema call
 - `extracted-mentions.json` captures entity and relationship mentions before consolidation
 - `run-metadata.json` captures run context, status, and summary counts for the execution
+- Gold-eval failures that reach traced ingestion also write this directory into a temporary debug bundle
 
 ## Local Viewing
 
@@ -202,7 +203,7 @@ Opt-in evaluation target:
 cargo test --test eval_gold -- --ignored
 ```
 
-When a gold fixture fails, the harness now writes a temporary debug artifact bundle and includes its path in the failure message.
+When a gold fixture fails, including extraction failures before graph consolidation completes, the harness writes a temporary debug artifact bundle and includes its path in the failure message.
 
 Required evaluation environment variables:
 

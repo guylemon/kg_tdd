@@ -16,7 +16,7 @@ use crate::app::App;
 
 #[must_use]
 pub fn run_cli() -> i32 {
-    init_tracing();
+    init_tracing_for_process();
 
     match CliArgs::parse() {
         Ok(args) => {
@@ -56,7 +56,7 @@ pub fn run_cli() -> i32 {
     }
 }
 
-fn init_tracing() {
+pub fn init_tracing_for_process() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
     let subscriber = tracing_subscriber::registry().with(filter).with(
         tracing_subscriber::fmt::layer()

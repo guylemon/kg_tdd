@@ -4,6 +4,7 @@ use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::application::error::AppError;
 use crate::domain::{
     DocumentId, EntityMention, KnowledgeGraph, NonEmptyString, RelationshipMention, TokenCount,
 };
@@ -176,6 +177,39 @@ impl RunContext {
     ) -> RunMetadata {
         let counts = result.map_or_else(RunCounts::default, RunCounts::from_result);
 
+        self.finish_impl(document_id, finished_at, status, counts, error)
+    }
+
+    pub(crate) fn finish_with_trace(
+        &self,
+        document_id: Option<&DocumentId>,
+        trace: Option<&IngestionTrace>,
+        finished_at: String,
+        status: RunStatus,
+        error: Option<RunErrorMetadata>,
+    ) -> RunMetadata {
+        let counts = trace.map_or_else(RunCounts::default, RunCounts::from_trace);
+
+        self.finish_impl(document_id, finished_at, status, counts, error)
+    }
+
+    pub(crate) fn with_output_dir<P>(&self, output_dir: P) -> Self
+    where
+        P: Into<PathBuf>,
+    {
+        let mut context = self.clone();
+        context.output_dir = Some(output_dir.into());
+        context
+    }
+
+    fn finish_impl(
+        &self,
+        document_id: Option<&DocumentId>,
+        finished_at: String,
+        status: RunStatus,
+        counts: RunCounts,
+        error: Option<RunErrorMetadata>,
+    ) -> RunMetadata {
         RunMetadata {
             run_id: self.run_id.clone(),
             started_at: self.started_at.clone(),
@@ -194,38 +228,51 @@ impl RunContext {
             error,
         }
     }
-
-    pub(crate) fn with_output_dir<P>(&self, output_dir: P) -> Self
-    where
-        P: Into<PathBuf>,
-    {
-        let mut context = self.clone();
-        context.output_dir = Some(output_dir.into());
-        context
-    }
 }
 
 impl RunCounts {
     pub(crate) fn from_result(result: &TraceableIngestResult) -> Self {
-        let extracted_entities = result
-            .trace
+        Self {
+            chunks: Some(result.trace.chunks.len()),
+            extracted_entities: Some(
+                result
+                    .trace
+                    .extracted_mentions
+                    .iter()
+                    .map(|chunk| chunk.entities.len())
+                    .sum::<usize>(),
+            ),
+            extracted_relationships: Some(
+                result
+                    .trace
+                    .extracted_mentions
+                    .iter()
+                    .map(|chunk| chunk.relationships.len())
+                    .sum::<usize>(),
+            ),
+            final_nodes: Some(result.graph.nodes.len()),
+            final_edges: Some(result.graph.edges.len()),
+        }
+    }
+
+    pub(crate) fn from_trace(trace: &IngestionTrace) -> Self {
+        let extracted_entities = trace
             .extracted_mentions
             .iter()
             .map(|chunk| chunk.entities.len())
             .sum::<usize>();
-        let extracted_relationships = result
-            .trace
+        let extracted_relationships = trace
             .extracted_mentions
             .iter()
             .map(|chunk| chunk.relationships.len())
             .sum::<usize>();
 
         Self {
-            chunks: Some(result.trace.chunks.len()),
+            chunks: Some(trace.chunks.len()),
             extracted_entities: Some(extracted_entities),
             extracted_relationships: Some(extracted_relationships),
-            final_nodes: Some(result.graph.nodes.len()),
-            final_edges: Some(result.graph.edges.len()),
+            final_nodes: None,
+            final_edges: None,
         }
     }
 }
@@ -300,6 +347,18 @@ pub(crate) struct IngestionTrace {
     pub(crate) chunks: Vec<ChunkTrace>,
     pub(crate) provider_responses: Vec<ProviderResponseTrace>,
     pub(crate) extracted_mentions: Vec<ChunkExtractionTrace>,
+}
+
+#[derive(Debug)]
+pub(crate) struct TraceableIngestError {
+    pub(crate) error: AppError,
+    pub(crate) trace: IngestionTrace,
+}
+
+impl TraceableIngestError {
+    pub(crate) fn new(error: AppError, trace: IngestionTrace) -> Self {
+        Self { error, trace }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

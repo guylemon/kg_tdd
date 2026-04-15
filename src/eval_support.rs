@@ -12,7 +12,8 @@ use crate::adapters::{
 };
 use crate::application::{
     IngestConfig, IngestDocumentService, IngestionTrace, MaxConcurrency, ProviderConfig,
-    ProviderMode, RunContext, RunMode, RunStatus, TraceableIngestResult, utc_now_rfc3339,
+    ProviderMode, RunContext, RunErrorMetadata, RunMode, RunStatus, TraceableIngestError,
+    TraceableIngestResult, utc_now_rfc3339,
 };
 use crate::domain::{
     EntityType, EpistemicStatus, GraphEdge, GraphNode, KnowledgeGraph, RelationshipType,
@@ -155,13 +156,19 @@ fn evaluate_fixture(fixture: &GoldFixture, config: &EvalConfig) -> Result<(), St
     let client = configure_fixture_client(config, fixture, &run_context, &document)?;
     let extractor = build_fixture_extractor(fixture, client, &run_context, &document)?;
     let service = IngestDocumentService::new(extractor);
-    let ingest_result = execute_fixture_ingestion(fixture, &run_context, &service, &document)?;
+    let ingest_result = match execute_fixture_ingestion(fixture, &run_context, &service, &document)
+    {
+        Ok(result) => result,
+        Err(err) => {
+            return fixture_extraction_failure(fixture, &run_context, &document, err);
+        }
+    };
     let sections = collect_fixture_diffs(fixture, &ingest_result);
 
     if sections.is_empty() {
         Ok(())
     } else {
-        failure_message(fixture, &run_context, &document, &ingest_result, &sections)
+        fixture_mismatch_failure(fixture, &run_context, &document, &ingest_result, &sections)
     }
 }
 
@@ -264,26 +271,18 @@ fn build_fixture_extractor(
 }
 
 fn execute_fixture_ingestion(
-    fixture: &GoldFixture,
+    _fixture: &GoldFixture,
     run_context: &RunContext,
     service: &IngestDocumentService<ParallelChunkExtractor<ConfiguredSchemaLlmClient>>,
     document: &crate::domain::Document,
-) -> Result<TraceableIngestResult, String> {
+) -> Result<TraceableIngestResult, TraceableIngestError> {
     debug!(
         run_id = %run_context.run_id,
         mode = %run_context.mode.label(),
         document_id = %document.id.0,
         "ingestion started"
     );
-    let ingest_result = service.execute_with_trace(document).map_err(|err| {
-        fixture_failure(
-            run_context,
-            &fixture.id,
-            Some(document.id.0.as_str()),
-            "extraction",
-            format!("fixture {} failed during extraction: {err}", fixture.id),
-        )
-    })?;
+    let ingest_result = service.execute_with_trace(document)?;
     debug!(
         run_id = %run_context.run_id,
         mode = %run_context.mode.label(),
@@ -328,41 +327,93 @@ fn collect_fixture_diffs(
     sections
 }
 
-fn failure_message(
+fn fixture_mismatch_failure(
     fixture: &GoldFixture,
     run_context: &RunContext,
     document: &crate::domain::Document,
     ingest_result: &TraceableIngestResult,
     sections: &[String],
 ) -> Result<(), String> {
-    let output_dir = temp_eval_debug_dir(&fixture.id);
-    let metadata = run_context.with_output_dir(output_dir.clone()).finish(
-        Some(&document.id),
-        Some(ingest_result),
-        utc_now_rfc3339(),
-        RunStatus::Failure,
-        Some(crate::application::RunErrorMetadata::new(
-            "gold-eval-mismatch",
-            sections.join("\n"),
-        )),
-    );
-    let debug_output = persist_failure_artifacts(&output_dir, ingest_result, &metadata).ok();
-    let message = format!(
-        "fixture {} did not match gold expectations{}\n{}",
-        fixture.id,
-        debug_output
-            .as_ref()
-            .map_or_else(String::new, |path| format!(
-                "\nDebug artifacts: {}",
-                path.display()
-            )),
-        sections.join("\n")
-    );
+    let details = sections.join("\n");
+    let head = format!("fixture {} did not match gold expectations", fixture.id);
+    let context = FixtureFailureContext {
+        fixture,
+        run_context,
+        document,
+        graph: Some(&ingest_result.graph),
+        trace: &ingest_result.trace,
+    };
+    fixture_failure_message(
+        &context,
+        &head,
+        &details,
+        RunErrorMetadata::new("gold-eval-mismatch", details.clone()),
+    )
+}
+
+fn fixture_extraction_failure(
+    fixture: &GoldFixture,
+    run_context: &RunContext,
+    document: &crate::domain::Document,
+    err: TraceableIngestError,
+) -> Result<(), String> {
+    let TraceableIngestError { error, trace } = err;
+    let head = format!("fixture {} failed during extraction: {}", fixture.id, error);
+    let context = FixtureFailureContext {
+        fixture,
+        run_context,
+        document,
+        graph: None,
+        trace: &trace,
+    };
+    fixture_failure_message(
+        &context,
+        &head,
+        "",
+        RunErrorMetadata::new(error.metadata_category(), error.to_string()),
+    )
+}
+
+struct FixtureFailureContext<'a> {
+    fixture: &'a GoldFixture,
+    run_context: &'a RunContext,
+    document: &'a crate::domain::Document,
+    graph: Option<&'a KnowledgeGraph>,
+    trace: &'a IngestionTrace,
+}
+
+fn fixture_failure_message(
+    context: &FixtureFailureContext<'_>,
+    head: &str,
+    details: &str,
+    error: RunErrorMetadata,
+) -> Result<(), String> {
+    let output_dir = temp_eval_debug_dir(&context.fixture.id);
+    let metadata = context
+        .run_context
+        .with_output_dir(output_dir.clone())
+        .finish_with_trace(
+            Some(&context.document.id),
+            Some(context.trace),
+            utc_now_rfc3339(),
+            RunStatus::Failure,
+            Some(error),
+        );
+    let debug_output =
+        persist_failure_artifacts(&output_dir, context.graph, context.trace, &metadata).ok();
+    let mut message = head.to_owned();
+    if let Some(path) = debug_output {
+        let _ = write!(message, "\nDebug artifacts: {}", path.display());
+    }
+    if !details.is_empty() {
+        message.push('\n');
+        message.push_str(details);
+    }
     debug!(
         run_id = %metadata.run_id,
         mode = %metadata.mode.label(),
-        document_id = %document.id.0,
-        error_category = "gold-eval-mismatch",
+        document_id = %context.document.id.0,
+        error_category = %metadata.error.as_ref().map_or("<none>", |error| error.category.as_str()),
         error = %message,
         "run failed"
     );
@@ -705,14 +756,17 @@ fn extraction_evidence_key(fact: &str, citation_text: &str, status: &str) -> Str
 
 fn persist_failure_artifacts(
     output_dir: &Path,
-    ingest_result: &TraceableIngestResult,
+    graph: Option<&KnowledgeGraph>,
+    trace: &IngestionTrace,
     metadata: &crate::application::RunMetadata,
 ) -> Result<PathBuf, String> {
+    if let Some(graph) = graph {
+        FileGraphArtifactSink
+            .write_graph(output_dir, graph)
+            .map_err(|err| format!("failed to write eval graph artifacts: {err}"))?;
+    }
     FileGraphArtifactSink
-        .write_graph(output_dir, &ingest_result.graph)
-        .map_err(|err| format!("failed to write eval graph artifacts: {err}"))?;
-    FileGraphArtifactSink
-        .write_debug_artifacts(output_dir, &ingest_result.trace, metadata)
+        .write_debug_artifacts(output_dir, trace, metadata)
         .map_err(|err| format!("failed to write eval debug artifacts: {err}"))?;
     Ok(output_dir.to_path_buf())
 }
@@ -896,14 +950,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        diff_multiset, gold_fixtures_root, load_gold_fixtures, load_gold_fixtures_from_root,
-        persist_failure_artifacts,
+        EvalConfig, ExpectedExtraction, ExpectedGraph, FixtureConfig, GoldFixture,
+        default_max_chunk_tokens, default_max_concurrency, default_tokenizer_name, diff_multiset,
+        fixture_extraction_failure, fixture_run_context, gold_fixtures_root, load_gold_fixtures,
+        load_gold_fixtures_from_root, persist_failure_artifacts,
     };
     use crate::application::{
-        IngestionTrace, MaxConcurrency, ProviderConfig, RunContext, RunErrorMetadata, RunMode,
-        RunStatus, TraceableIngestResult, utc_now_rfc3339,
+        ChunkExtractionTrace, ChunkTrace, EntityMentionTrace, IngestionTrace, MaxConcurrency,
+        ProviderConfig, ProviderResponseKind, ProviderResponseTrace, RunContext, RunErrorMetadata,
+        RunMode, RunStatus, TraceableIngestError, TraceableIngestResult, utc_now_rfc3339,
     };
-    use crate::domain::KnowledgeGraph;
+    use crate::domain::{Document, DocumentId, KnowledgeGraph, NonEmptyString};
 
     #[test]
     fn gold_fixtures_have_required_files() {
@@ -1054,7 +1111,8 @@ mod tests {
 
         let output_dir = temp_dir("gold_failure_artifacts");
         let output_dir =
-            persist_failure_artifacts(&output_dir, &result, &metadata).expect("artifacts");
+            persist_failure_artifacts(&output_dir, Some(&result.graph), &result.trace, &metadata)
+                .expect("artifacts");
         let metadata_path = output_dir.join("debug").join("run-metadata.json");
 
         assert!(metadata_path.is_file());
@@ -1062,6 +1120,97 @@ mod tests {
             std::fs::read_to_string(metadata_path)
                 .expect("metadata")
                 .contains("\"status\": \"failure\"")
+        );
+    }
+
+    #[test]
+    fn extraction_failures_write_debug_artifacts_and_report_path() {
+        let fixture = GoldFixture {
+            id: String::from("seed"),
+            input_path: PathBuf::from("tests/fixtures/gold/seed/input.txt"),
+            config: FixtureConfig {
+                tokenizer_name: default_tokenizer_name(),
+                max_chunk_tokens: default_max_chunk_tokens(),
+                max_concurrency: default_max_concurrency(),
+            },
+            expected_extraction: ExpectedExtraction {
+                entities: Vec::new(),
+                relationships: Vec::new(),
+            },
+            expected_graph: ExpectedGraph {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            },
+        };
+        let run_context = fixture_run_context(
+            &fixture,
+            &EvalConfig {
+                provider: ProviderConfig::default(),
+            },
+        );
+        let document = Document {
+            id: DocumentId(String::from("doc-1")),
+            text: NonEmptyString(String::from("ignored")),
+        };
+        let trace = IngestionTrace {
+            chunks: vec![ChunkTrace {
+                index: 0,
+                document_id: document.id.0.clone(),
+                text: String::from("Alice met Bob"),
+                token_count: 4,
+            }],
+            provider_responses: vec![ProviderResponseTrace {
+                chunk_index: 0,
+                kind: ProviderResponseKind::EntityExtraction,
+                raw_response: String::from(
+                    "{\"entities\":[{\"name\":\"Alice\",\"entity_type\":\"Person\"}]}",
+                ),
+            }],
+            extracted_mentions: vec![ChunkExtractionTrace {
+                chunk_index: 0,
+                entities: vec![EntityMentionTrace {
+                    name: String::from("Alice"),
+                    entity_type: String::from("Person"),
+                    description: String::from("person"),
+                    source_document_id: document.id.0.clone(),
+                    source_text: String::from("Alice met Bob"),
+                    source_token_count: 4,
+                }],
+                relationships: Vec::new(),
+            }],
+        };
+        let err = TraceableIngestError::new(
+            crate::application::AppError::provider_response(
+                "assistant content does not match schema",
+            ),
+            trace,
+        );
+
+        let message = fixture_extraction_failure(&fixture, &run_context, &document, err)
+            .expect_err("extraction failure should be reported");
+
+        assert!(message.contains("fixture seed failed during extraction"));
+        assert!(message.contains("Debug artifacts:"));
+
+        let artifact_dir = message
+            .lines()
+            .find_map(|line: &str| line.strip_prefix("Debug artifacts: ").map(PathBuf::from))
+            .expect("artifact path");
+        let metadata_path = artifact_dir.join("debug").join("run-metadata.json");
+        let chunks_path = artifact_dir.join("debug").join("chunk-list.json");
+        let responses_path = artifact_dir
+            .join("debug")
+            .join("raw-provider-responses.json");
+        let mentions_path = artifact_dir.join("debug").join("extracted-mentions.json");
+
+        assert!(metadata_path.is_file());
+        assert!(chunks_path.is_file());
+        assert!(responses_path.is_file());
+        assert!(mentions_path.is_file());
+        assert!(
+            std::fs::read_to_string(metadata_path)
+                .expect("metadata")
+                .contains("\"chunk_count\": 1")
         );
     }
 
