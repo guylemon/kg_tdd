@@ -1,7 +1,7 @@
 export RUST_LOG=debug
 export KG_DEBUG_RAW_PROVIDER=1
 
-cargo run -- \
+cargo run --quiet -- \
   --input tests/fixtures/gold/seed/input.txt \
   --output-dir out \
   --provider-mode openai-compatible \

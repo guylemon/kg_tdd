@@ -344,13 +344,38 @@ mod tests {
         assert_eq!(request["model"], "llama3.2");
         assert_eq!(request["messages"][0]["role"], "system");
         assert_eq!(request["messages"][1]["role"], "user");
-        assert_eq!(request["response_format"]["type"], "json_object");
-        assert!(request["response_format"]["schema"].is_object());
+        assert_eq!(request["response_format"]["type"], "json_schema");
+        assert_eq!(
+            request["response_format"]["json_schema"]["name"],
+            "AiExtractionResponse"
+        );
+        assert_eq!(request["response_format"]["json_schema"]["strict"], true);
+        assert!(request["response_format"]["json_schema"]["schema"].is_object());
+        assert_eq!(
+            request["response_format"]["json_schema"]["schema"]["properties"]["entities"]["items"]
+                ["properties"]["entity_type"]["type"],
+            "string"
+        );
+        assert_eq!(
+            request["response_format"]["json_schema"]["schema"]["properties"]["entities"]["items"]
+                ["properties"]["entity_type"]["enum"],
+            serde_json::json!([
+                "Concept",
+                "Event",
+                "Lifeform",
+                "Location",
+                "Organization",
+                "Person",
+                "Product",
+                "Technology"
+            ])
+        );
         assert_eq!(request["temperature"], 0.0);
     }
 
     #[test]
-    fn relationship_schema_includes_closed_nested_evidence_items() {
+    fn relationship_schema_includes_closed_nested_evidence_items_and_string_enum_relationship_type()
+    {
         let request = build_chat_request::<AiRelationshipExtractionResponse>(
             "llama3.2",
             NonEmptyString(String::from("system prompt")),
@@ -358,12 +383,28 @@ mod tests {
         )
         .expect("request");
         let request = serde_json::to_value(request).expect("request json");
-        let schema = &request["response_format"]["schema"];
+        let schema = &request["response_format"]["json_schema"]["schema"];
         let schema_text = schema.to_string();
 
         assert!(schema_text.contains("\"citation_text\""));
         assert!(schema_text.contains("\"fact\""));
         assert!(schema_text.contains("\"additionalProperties\":false"));
+        assert_eq!(
+            schema["properties"]["relationships"]["items"]["properties"]["relationship_type"]["type"],
+            "string"
+        );
+        assert_eq!(
+            schema["properties"]["relationships"]["items"]["properties"]["relationship_type"]["enum"],
+            serde_json::json!(["GrowsOn", "IsA"])
+        );
+        assert!(
+            !schema_text.contains("\"const\":\"Person\""),
+            "entity and relationship enums should be emitted as string enums"
+        );
+        assert!(
+            !schema_text.contains("\"const\":\"GrowsOn\""),
+            "entity and relationship enums should be emitted as string enums"
+        );
     }
 
     #[test]
