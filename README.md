@@ -56,6 +56,7 @@ Current flags:
 - `--provider-mode <fixture|openai-compatible>`: extraction backend mode
 - `--provider-base-url <URL>`: OpenAI-compatible provider base URL
 - `--provider-model <NAME>`: provider model or alias name
+- `--prompt-templates-dir <PATH>`: directory containing runtime prompt templates
 
 Example:
 
@@ -90,6 +91,8 @@ cargo run -- \
   --provider-base-url http://localhost:8080 \
   --provider-model llama3.2
 ```
+
+Prompt templates are loaded from a directory at runtime. The default directory is `assets/prompts/`, which contains the current system and user templates for entity and relationship extraction. Override it with `--prompt-templates-dir` to iterate on prompt text without rebuilding the application.
 
 If your server requires bearer auth, set:
 
@@ -197,11 +200,19 @@ Default tests:
 cargo test
 ```
 
-Opt-in evaluation target:
+Opt-in single-run evaluation target:
 
 ```bash
-cargo test --test eval_gold -- --ignored
+cargo test --test eval_gold gold_fixtures_match_expected_extraction_and_graph_outputs -- --ignored
 ```
+
+Opt-in repeated-run stability target:
+
+```bash
+cargo test --test eval_gold gold_fixtures_remain_stable_across_repeated_runs -- --ignored
+```
+
+The repeated-run target executes the gold fixtures 10 times and expects at least a 90% pass rate. It is intended to separate prompt churn from live-provider noise, not to serve as a CI gate.
 
 When a gold fixture fails, including extraction failures before graph consolidation completes, the harness writes a temporary debug artifact bundle and includes its path in the failure message.
 
@@ -216,6 +227,13 @@ Optional if your provider requires auth:
 
 ```bash
 export KG_EVAL_PROVIDER_API_KEY=your-token
+```
+
+Convenience scripts:
+
+```bash
+./eval.sh
+./eval-repeat.sh
 ```
 
 Each gold fixture may also include `expected_extraction.json` for pre-consolidation expectations and an optional `config.json` for scenario-specific chunking.

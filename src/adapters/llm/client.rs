@@ -62,11 +62,16 @@ impl SchemaLlmClient for ConfiguredSchemaLlmClient {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::application::{Chunk, ProviderConfig, ProviderMode};
     use crate::domain::{DocumentId, NonEmptyString, TokenCount};
 
     use super::ConfiguredSchemaLlmClient;
     use crate::adapters::extraction::extract_chunk;
+    use crate::adapters::prompt::PromptTemplates;
 
     #[test]
     fn configured_client_uses_fixture_mode_by_default() {
@@ -76,6 +81,7 @@ mod tests {
             model: None,
         })
         .expect("fixture client");
+        let prompt_templates = load_prompt_templates();
 
         let outcome = extract_chunk(
             Chunk {
@@ -84,9 +90,33 @@ mod tests {
                 token_count: TokenCount(10),
             },
             &client,
+            &prompt_templates,
         )
         .expect("extracts");
 
         assert_eq!(outcome.entities.len(), 3);
+    }
+
+    fn load_prompt_templates() -> PromptTemplates {
+        let dir = std::env::temp_dir().join(format!(
+            "prompt-templates-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("dir");
+        fs::write(dir.join("entity.system.txt"), "Entity system prompt.").expect("entity system");
+        fs::write(dir.join("entity.user.txt"), "{{input_text}}").expect("entity user");
+        fs::write(
+            dir.join("relationship.system.txt"),
+            "Relationship system prompt.",
+        )
+        .expect("relationship system");
+        fs::write(dir.join("relationship.user.txt"), "{{annotated_text}}")
+            .expect("relationship user");
+
+        PromptTemplates::load(Path::new(&dir)).expect("prompt templates")
     }
 }

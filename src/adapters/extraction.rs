@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
 use text_splitter::{ChunkConfig, TextSplitter};
@@ -18,6 +19,7 @@ use super::{
         AiExtractionResponse, AiRelationshipExtractionResponse, ExtractedEvidence,
         GeneratedSchemaValue, SchemaLlmClient,
     },
+    prompt::{EntityExtractionPrompt, PromptTemplates, RelationshipExtractionPrompt},
 };
 
 pub(crate) struct ParallelChunkExtractor<C> {
@@ -25,6 +27,7 @@ pub(crate) struct ParallelChunkExtractor<C> {
     max_concurrency: MaxConcurrency,
     llm_client: Arc<C>,
     tokenizer: Tokenizer,
+    prompt_templates: Arc<PromptTemplates>,
 }
 
 impl<C> ParallelChunkExtractor<C>
@@ -40,6 +43,28 @@ where
     where
         T: TokenizerSource,
     {
+        let prompt_templates_dir = config.prompt_templates_dir.clone();
+        Self::new_with_prompt_templates_dir(
+            config,
+            max_concurrency,
+            llm_client,
+            tokenizer_source,
+            &prompt_templates_dir,
+        )
+    }
+
+    pub(crate) fn new_with_prompt_templates_dir<T, P>(
+        config: IngestConfig,
+        max_concurrency: MaxConcurrency,
+        llm_client: C,
+        tokenizer_source: &T,
+        prompt_templates_dir: P,
+    ) -> Result<Self, AppError>
+    where
+        T: TokenizerSource,
+        P: AsRef<Path>,
+    {
+        let prompt_templates = Arc::new(PromptTemplates::load(prompt_templates_dir.as_ref())?);
         let tokenizer = tokenizer_source.load(&config.tokenizer_name)?;
 
         Ok(Self {
@@ -47,6 +72,7 @@ where
             max_concurrency,
             llm_client: Arc::new(llm_client),
             tokenizer,
+            prompt_templates,
         })
     }
 }
@@ -88,10 +114,15 @@ where
     C: SchemaLlmClient + 'static,
 {
     fn extract(&self, chunk: Chunk) -> Result<ExtractionOutcome, AppError> {
-        map_reduce_extract(&self.llm_client, self.max_concurrency, vec![chunk])?
-            .into_iter()
-            .next()
-            .ok_or(AppError::ExtractChunk)
+        map_reduce_extract(
+            &self.llm_client,
+            &self.prompt_templates,
+            self.max_concurrency,
+            vec![chunk],
+        )?
+        .into_iter()
+        .next()
+        .ok_or(AppError::ExtractChunk)
     }
 }
 
@@ -102,6 +133,7 @@ struct ExtractionTask {
 
 fn map_reduce_extract<C>(
     llm_client: &Arc<C>,
+    prompt_templates: &Arc<PromptTemplates>,
     max_concurrency: MaxConcurrency,
     chunks: Vec<Chunk>,
 ) -> Result<Vec<ExtractionOutcome>, AppError>
@@ -120,6 +152,7 @@ where
         let task_receiver = Arc::clone(&task_rx);
         let result_transmitter = result_tx.clone();
         let llm = Arc::clone(llm_client);
+        let prompt_templates = Arc::clone(prompt_templates);
 
         let handle = std::thread::spawn(move || {
             loop {
@@ -130,7 +163,8 @@ where
 
                 match task {
                     Ok(task) => {
-                        let extraction = extract_chunk(task.chunk, llm.as_ref());
+                        let extraction =
+                            extract_chunk(task.chunk, llm.as_ref(), prompt_templates.as_ref());
                         let _ = result_transmitter.send(extraction);
                     }
                     Err(_) => break,
@@ -161,7 +195,11 @@ where
     Ok(results)
 }
 
-pub(crate) fn extract_chunk<C>(chunk: Chunk, llm_client: &C) -> Result<ExtractionOutcome, AppError>
+pub(crate) fn extract_chunk<C>(
+    chunk: Chunk,
+    llm_client: &C,
+    prompt_templates: &PromptTemplates,
+) -> Result<ExtractionOutcome, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
@@ -169,14 +207,14 @@ where
         "extracting chunk for document={} with token_count={}",
         chunk.document_id.0, chunk.token_count.0
     );
-    let entity_response = request_entity_extraction(&chunk.text, llm_client)?;
+    let entity_response = request_entity_extraction(&chunk.text, llm_client, prompt_templates)?;
     let mut provider_responses = vec![CapturedProviderResponse {
         kind: ProviderResponseKind::EntityExtraction,
         raw_response: entity_response.raw_response,
     }];
     let marked = mark_entities(chunk, &entity_response.parsed);
     let entities = extract_entities(&marked, entity_response.parsed);
-    let relationship_response = extract_relationships(&marked, llm_client)?;
+    let relationship_response = extract_relationships(&marked, llm_client, prompt_templates)?;
     provider_responses.push(CapturedProviderResponse {
         kind: ProviderResponseKind::RelationshipExtraction,
         raw_response: relationship_response.raw_response,
@@ -199,14 +237,14 @@ where
 fn extract_relationships<C>(
     text_unit: &TextUnit,
     llm_client: &C,
+    prompt_templates: &PromptTemplates,
 ) -> Result<GeneratedSchemaValue<Vec<RelationshipMention>>, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
-    let sys_prompt = NonEmptyString(String::from("Extract entity relationships from the text."));
-    let user_prompt = NonEmptyString(text_unit.text.0.clone());
+    let prompt = RelationshipExtractionPrompt::new(prompt_templates, text_unit).build()?;
     let response = llm_client
-        .generate_with_schema::<AiRelationshipExtractionResponse>(sys_prompt, user_prompt)?;
+        .generate_with_schema::<AiRelationshipExtractionResponse>(prompt.system, prompt.user)?;
 
     let source_text = deannotate_text(&text_unit.text.0);
     let relationships = response
@@ -325,13 +363,13 @@ fn deannotate_text(text: &str) -> String {
 fn request_entity_extraction<C>(
     text: &NonEmptyString,
     llm_client: &C,
+    prompt_templates: &PromptTemplates,
 ) -> Result<GeneratedSchemaValue<AiExtractionResponse>, AppError>
 where
     C: SchemaLlmClient + 'static,
 {
-    let sys_prompt = NonEmptyString(String::from("Mark entities in the text."));
-    let user_prompt = text.clone();
-    llm_client.generate_with_schema::<AiExtractionResponse>(sys_prompt, user_prompt)
+    let prompt = EntityExtractionPrompt::new(prompt_templates, text).build()?;
+    llm_client.generate_with_schema::<AiExtractionResponse>(prompt.system, prompt.user)
 }
 
 fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError> {
@@ -343,6 +381,9 @@ fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<TokenCount, AppError
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use schemars::JsonSchema;
     use tokenizers::Tokenizer;
     use tokenizers::models::wordlevel::WordLevel;
@@ -355,148 +396,21 @@ mod tests {
     use crate::ports::DocumentPartitioner;
 
     use super::{ParallelChunkExtractor, extract_chunk};
+    use crate::adapters::prompt::PromptTemplates;
 
-    #[test]
-    fn partitions_document_into_single_chunk() {
-        let extractor = ParallelChunkExtractor::new(
-            IngestConfig {
-                tokenizer_name: String::from("test-wordlevel"),
-                max_chunk_tokens: 32,
-            },
-            MaxConcurrency(1),
-            FakeSchemaLlmClient,
-            &StaticTokenizerSource::new(build_test_tokenizer()),
-        )
-        .expect("extractor");
-        let document = Document {
-            id: DocumentId(String::from("stdin-document")),
-            text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
-        };
+    struct EvidenceClient;
 
-        let chunks = extractor.partition(&document).expect("chunks");
-
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].document_id.0, "stdin-document");
-        assert_eq!(chunks[0].token_count.0, 10);
-    }
-
-    #[test]
-    fn fake_client_extracts_fixture_entities_and_relationships() {
-        let outcome = extract_chunk(
-            Chunk {
-                document_id: DocumentId(String::from("stdin-document")),
-                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
-                token_count: TokenCount(10),
-            },
-            &FakeSchemaLlmClient,
-        )
-        .expect("outcome");
-
-        assert_eq!(outcome.entities.len(), 3);
-        assert_eq!(outcome.relationships.len(), 2);
-        assert_eq!(outcome.provider_responses.len(), 2);
-        assert_eq!(
-            outcome.provider_responses[0].kind,
-            crate::application::ProviderResponseKind::EntityExtraction
-        );
-        assert_eq!(
-            outcome.provider_responses[1].kind,
-            crate::application::ProviderResponseKind::RelationshipExtraction
-        );
-        assert!(
-            outcome.provider_responses[0]
-                .raw_response
-                .contains("\"entities\"")
-        );
-        assert!(
-            outcome.provider_responses[1]
-                .raw_response
-                .contains("\"relationships\"")
-        );
-        assert_eq!(outcome.relationships[0].source.0, "node:lifeform:apple");
-        assert_eq!(outcome.relationships[1].target.0, "node:lifeform:trees");
-    }
-
-    #[test]
-    fn partitions_long_document_into_multiple_chunks() {
-        let extractor = ParallelChunkExtractor::new(
-            IngestConfig {
-                tokenizer_name: String::from("test-wordlevel"),
-                max_chunk_tokens: 12,
-            },
-            MaxConcurrency(1),
-            FakeSchemaLlmClient,
-            &StaticTokenizerSource::new(build_test_tokenizer()),
-        )
-        .expect("extractor");
-        let document = Document {
-            id: DocumentId(String::from("stdin-document")),
-            text: NonEmptyString(String::from(
-                "An apple is a red fruit that grows on trees.\n\nAn apple is a red fruit that grows on trees.",
-            )),
-        };
-
-        let chunks = extractor.partition(&document).expect("chunks");
-
-        assert_eq!(chunks.len(), 2);
-        assert!(chunks.iter().all(|chunk| chunk.token_count.0 <= 12));
-        assert_eq!(
-            chunks[0].text.0,
-            "An apple is a red fruit that grows on trees."
-        );
-        assert_eq!(
-            chunks[1].text.0,
-            "An apple is a red fruit that grows on trees."
-        );
-    }
-
-    #[test]
-    fn fails_fast_when_tokenizer_cannot_be_loaded() {
-        struct BrokenTokenizerSource;
-
-        impl crate::adapters::TokenizerSource for BrokenTokenizerSource {
-            fn load(
-                &self,
-                _tokenizer_name: &str,
-            ) -> Result<Tokenizer, crate::application::AppError> {
-                Err(crate::application::AppError::load_tokenizer(
-                    "test-wordlevel",
-                ))
-            }
-        }
-
-        let result = ParallelChunkExtractor::new(
-            IngestConfig {
-                tokenizer_name: String::from("test-wordlevel"),
-                max_chunk_tokens: 32,
-            },
-            MaxConcurrency(1),
-            FakeSchemaLlmClient,
-            &BrokenTokenizerSource,
-        );
-
-        assert!(matches!(
-            result,
-            Err(crate::application::AppError::LoadTokenizer(_))
-        ));
-    }
-
-    #[test]
-    fn drops_invalid_evidence_items_and_keeps_relationship_with_valid_quote() {
-        struct EvidenceClient;
-
-        impl SchemaLlmClient for EvidenceClient {
-            fn generate_with_schema<T>(
-                &self,
-                _sys_prompt: NonEmptyString,
-                _user_prompt: NonEmptyString,
-            ) -> Result<GeneratedSchemaValue<T>, AppError>
-            where
-                T: serde::de::DeserializeOwned + JsonSchema + 'static,
-            {
-                let payload = if std::any::TypeId::of::<T>()
-                    == std::any::TypeId::of::<AiExtractionResponse>()
-                {
+    impl SchemaLlmClient for EvidenceClient {
+        fn generate_with_schema<T>(
+            &self,
+            _sys_prompt: NonEmptyString,
+            _user_prompt: NonEmptyString,
+        ) -> Result<GeneratedSchemaValue<T>, AppError>
+        where
+            T: serde::de::DeserializeOwned + JsonSchema + 'static,
+        {
+            let payload =
+                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<AiExtractionResponse>() {
                     serde_json::json!({
                         "entities": [
                             {
@@ -542,60 +456,30 @@ mod tests {
                     })
                 };
 
-                let raw_response = payload.to_string();
-                let parsed = serde_json::from_value(payload)
-                    .map_err(|_| AppError::provider_response("test payload invalid"))?;
+            let raw_response = payload.to_string();
+            let parsed = serde_json::from_value(payload)
+                .map_err(|_| AppError::provider_response("test payload invalid"))?;
 
-                Ok(GeneratedSchemaValue {
-                    parsed,
-                    raw_response,
-                })
-            }
+            Ok(GeneratedSchemaValue {
+                parsed,
+                raw_response,
+            })
         }
-
-        let outcome = extract_chunk(
-            Chunk {
-                document_id: DocumentId(String::from("stdin-document")),
-                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
-                token_count: TokenCount(10),
-            },
-            &EvidenceClient,
-        )
-        .expect("outcome");
-
-        assert_eq!(outcome.relationships.len(), 1);
-        assert_eq!(outcome.relationships[0].evidence.len(), 1);
-        assert_eq!(outcome.provider_responses.len(), 2);
-        assert_eq!(
-            outcome.relationships[0].evidence[0].citation_text,
-            "apple is a red fruit"
-        );
-        assert_eq!(
-            outcome.relationships[0].evidence[0].citation.document_id.0,
-            "stdin-document"
-        );
-        assert!(matches!(
-            outcome.relationships[0].evidence[0].status,
-            crate::domain::EpistemicStatus::Probable
-        ));
     }
 
-    #[test]
-    fn drops_relationship_when_all_evidence_items_are_invalid() {
-        struct InvalidEvidenceClient;
+    struct InvalidEvidenceClient;
 
-        impl SchemaLlmClient for InvalidEvidenceClient {
-            fn generate_with_schema<T>(
-                &self,
-                _sys_prompt: NonEmptyString,
-                _user_prompt: NonEmptyString,
-            ) -> Result<GeneratedSchemaValue<T>, AppError>
-            where
-                T: serde::de::DeserializeOwned + JsonSchema + 'static,
-            {
-                let payload = if std::any::TypeId::of::<T>()
-                    == std::any::TypeId::of::<AiExtractionResponse>()
-                {
+    impl SchemaLlmClient for InvalidEvidenceClient {
+        fn generate_with_schema<T>(
+            &self,
+            _sys_prompt: NonEmptyString,
+            _user_prompt: NonEmptyString,
+        ) -> Result<GeneratedSchemaValue<T>, AppError>
+        where
+            T: serde::de::DeserializeOwned + JsonSchema + 'static,
+        {
+            let payload =
+                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<AiExtractionResponse>() {
                     serde_json::json!({
                         "entities": [
                             {
@@ -637,16 +521,188 @@ mod tests {
                     })
                 };
 
-                let raw_response = payload.to_string();
-                let parsed = serde_json::from_value(payload)
-                    .map_err(|_| AppError::provider_response("test payload invalid"))?;
+            let raw_response = payload.to_string();
+            let parsed = serde_json::from_value(payload)
+                .map_err(|_| AppError::provider_response("test payload invalid"))?;
 
-                Ok(GeneratedSchemaValue {
-                    parsed,
-                    raw_response,
-                })
+            Ok(GeneratedSchemaValue {
+                parsed,
+                raw_response,
+            })
+        }
+    }
+
+    #[test]
+    fn partitions_document_into_single_chunk() {
+        let prompt_dir = build_prompt_dir("single-chunk");
+        let extractor = ParallelChunkExtractor::new_with_prompt_templates_dir(
+            IngestConfig {
+                tokenizer_name: String::from("test-wordlevel"),
+                max_chunk_tokens: 32,
+                prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
+            },
+            MaxConcurrency(1),
+            FakeSchemaLlmClient,
+            &StaticTokenizerSource::new(build_test_tokenizer()),
+            &prompt_dir,
+        )
+        .expect("extractor");
+        let document = Document {
+            id: DocumentId(String::from("stdin-document")),
+            text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+        };
+
+        let chunks = extractor.partition(&document).expect("chunks");
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].document_id.0, "stdin-document");
+        assert_eq!(chunks[0].token_count.0, 10);
+    }
+
+    #[test]
+    fn fake_client_extracts_fixture_entities_and_relationships() {
+        let prompt_templates = build_prompt_templates("fixture-extract");
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: TokenCount(10),
+            },
+            &FakeSchemaLlmClient,
+            &prompt_templates,
+        )
+        .expect("outcome");
+
+        assert_eq!(outcome.entities.len(), 3);
+        assert_eq!(outcome.relationships.len(), 2);
+        assert_eq!(outcome.provider_responses.len(), 2);
+        assert_eq!(
+            outcome.provider_responses[0].kind,
+            crate::application::ProviderResponseKind::EntityExtraction
+        );
+        assert_eq!(
+            outcome.provider_responses[1].kind,
+            crate::application::ProviderResponseKind::RelationshipExtraction
+        );
+        assert!(
+            outcome.provider_responses[0]
+                .raw_response
+                .contains("\"entities\"")
+        );
+        assert!(
+            outcome.provider_responses[1]
+                .raw_response
+                .contains("\"relationships\"")
+        );
+        assert_eq!(outcome.relationships[0].source.0, "node:lifeform:apple");
+        assert_eq!(outcome.relationships[1].target.0, "node:lifeform:trees");
+    }
+
+    #[test]
+    fn partitions_long_document_into_multiple_chunks() {
+        let prompt_dir = build_prompt_dir("multi-chunk");
+        let extractor = ParallelChunkExtractor::new_with_prompt_templates_dir(
+            IngestConfig {
+                tokenizer_name: String::from("test-wordlevel"),
+                max_chunk_tokens: 12,
+                prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
+            },
+            MaxConcurrency(1),
+            FakeSchemaLlmClient,
+            &StaticTokenizerSource::new(build_test_tokenizer()),
+            &prompt_dir,
+        )
+        .expect("extractor");
+        let document = Document {
+            id: DocumentId(String::from("stdin-document")),
+            text: NonEmptyString(String::from(
+                "An apple is a red fruit that grows on trees.\n\nAn apple is a red fruit that grows on trees.",
+            )),
+        };
+
+        let chunks = extractor.partition(&document).expect("chunks");
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|chunk| chunk.token_count.0 <= 12));
+        assert_eq!(
+            chunks[0].text.0,
+            "An apple is a red fruit that grows on trees."
+        );
+        assert_eq!(
+            chunks[1].text.0,
+            "An apple is a red fruit that grows on trees."
+        );
+    }
+
+    #[test]
+    fn fails_fast_when_tokenizer_cannot_be_loaded() {
+        struct BrokenTokenizerSource;
+
+        impl crate::adapters::TokenizerSource for BrokenTokenizerSource {
+            fn load(
+                &self,
+                _tokenizer_name: &str,
+            ) -> Result<Tokenizer, crate::application::AppError> {
+                Err(crate::application::AppError::load_tokenizer(
+                    "test-wordlevel",
+                ))
             }
         }
+
+        let prompt_dir = build_prompt_dir("broken-tokenizer");
+        let result = ParallelChunkExtractor::new_with_prompt_templates_dir(
+            IngestConfig {
+                tokenizer_name: String::from("test-wordlevel"),
+                max_chunk_tokens: 32,
+                prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
+            },
+            MaxConcurrency(1),
+            FakeSchemaLlmClient,
+            &BrokenTokenizerSource,
+            &prompt_dir,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::application::AppError::LoadTokenizer(_))
+        ));
+    }
+
+    #[test]
+    fn drops_invalid_evidence_items_and_keeps_relationship_with_valid_quote() {
+        let prompt_templates = build_prompt_templates("valid-quote");
+
+        let outcome = extract_chunk(
+            Chunk {
+                document_id: DocumentId(String::from("stdin-document")),
+                text: NonEmptyString(String::from("An apple is a red fruit that grows on trees")),
+                token_count: TokenCount(10),
+            },
+            &EvidenceClient,
+            &prompt_templates,
+        )
+        .expect("outcome");
+
+        assert_eq!(outcome.relationships.len(), 1);
+        assert_eq!(outcome.relationships[0].evidence.len(), 1);
+        assert_eq!(outcome.provider_responses.len(), 2);
+        assert_eq!(
+            outcome.relationships[0].evidence[0].citation_text,
+            "apple is a red fruit"
+        );
+        assert_eq!(
+            outcome.relationships[0].evidence[0].citation.document_id.0,
+            "stdin-document"
+        );
+        assert!(matches!(
+            outcome.relationships[0].evidence[0].status,
+            crate::domain::EpistemicStatus::Probable
+        ));
+    }
+
+    #[test]
+    fn drops_relationship_when_all_evidence_items_are_invalid() {
+        let prompt_templates = build_prompt_templates("invalid-evidence");
 
         let outcome = extract_chunk(
             Chunk {
@@ -655,6 +711,7 @@ mod tests {
                 token_count: TokenCount(10),
             },
             &InvalidEvidenceClient,
+            &prompt_templates,
         )
         .expect("outcome");
 
@@ -688,5 +745,33 @@ mod tests {
         let mut tokenizer = Tokenizer::new(model);
         tokenizer.with_pre_tokenizer(Some(Whitespace));
         tokenizer
+    }
+
+    fn build_prompt_templates(prefix: &str) -> PromptTemplates {
+        let dir = build_prompt_dir(prefix);
+        PromptTemplates::load(&dir).expect("prompt templates")
+    }
+
+    fn build_prompt_dir(prefix: &str) -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&dir).expect("prompt dir");
+        fs::write(dir.join("entity.system.txt"), "Entity system prompt.").expect("entity system");
+        fs::write(dir.join("entity.user.txt"), "Entity input: {{input_text}}")
+            .expect("entity user");
+        fs::write(
+            dir.join("relationship.system.txt"),
+            "Relationship system prompt.",
+        )
+        .expect("relationship system");
+        fs::write(
+            dir.join("relationship.user.txt"),
+            "Relationship input: {{annotated_text}}",
+        )
+        .expect("relationship user");
+        dir
     }
 }

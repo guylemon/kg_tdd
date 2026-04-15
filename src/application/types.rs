@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -30,6 +30,7 @@ pub(crate) struct MaxConcurrency(pub u8);
 pub(crate) struct IngestConfig {
     pub(crate) tokenizer_name: String,
     pub(crate) max_chunk_tokens: usize,
+    pub(crate) prompt_templates_dir: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -119,7 +120,16 @@ impl Default for IngestConfig {
         Self {
             tokenizer_name: String::from("bert-base-cased"),
             max_chunk_tokens: 128,
+            prompt_templates_dir: Self::default_prompt_templates_dir(),
         }
+    }
+}
+
+impl IngestConfig {
+    pub(crate) fn default_prompt_templates_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join("prompts")
     }
 }
 

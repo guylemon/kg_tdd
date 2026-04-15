@@ -9,6 +9,8 @@ pub(crate) enum AppError {
     EmptyInput { path: PathBuf },
     LoadTokenizer(String),
     InvalidProviderConfig(String),
+    ReadPromptTemplate { path: PathBuf },
+    InvalidPromptTemplate(String),
     ProviderTransport(String),
     ProviderTimeout(String),
     ProviderAuthentication(String),
@@ -26,7 +28,9 @@ impl AppError {
             Self::InvalidInputPath(_) => 3,
             Self::ReadInput { .. } | Self::EmptyInput { .. } => 4,
             Self::LoadTokenizer(_) => 5,
-            Self::InvalidProviderConfig(_) => 6,
+            Self::InvalidProviderConfig(_)
+            | Self::ReadPromptTemplate { .. }
+            | Self::InvalidPromptTemplate(_) => 6,
             Self::ProviderTransport(_)
             | Self::ProviderTimeout(_)
             | Self::ProviderAuthentication(_)
@@ -61,6 +65,14 @@ impl AppError {
         Self::InvalidProviderConfig(message.into())
     }
 
+    pub(crate) fn read_prompt_template(path: impl Into<PathBuf>) -> Self {
+        Self::ReadPromptTemplate { path: path.into() }
+    }
+
+    pub(crate) fn invalid_prompt_template(message: impl Into<String>) -> Self {
+        Self::InvalidPromptTemplate(message.into())
+    }
+
     pub(crate) fn provider_transport(message: impl Into<String>) -> Self {
         Self::ProviderTransport(message.into())
     }
@@ -93,6 +105,8 @@ impl AppError {
             Self::EmptyInput { .. } => "empty-input",
             Self::LoadTokenizer(_) => "load-tokenizer",
             Self::InvalidProviderConfig(_) => "invalid-provider-config",
+            Self::ReadPromptTemplate { .. } => "read-prompt-template",
+            Self::InvalidPromptTemplate(_) => "invalid-prompt-template",
             Self::ProviderTransport(_) => "provider-transport",
             Self::ProviderTimeout(_) => "provider-timeout",
             Self::ProviderAuthentication(_) => "provider-authentication",
@@ -125,6 +139,12 @@ impl fmt::Display for AppError {
             Self::LoadTokenizer(name) => write!(f, "failed to load tokenizer: {name}"),
             Self::InvalidProviderConfig(message) => {
                 write!(f, "invalid provider configuration: {message}")
+            }
+            Self::ReadPromptTemplate { path } => {
+                write!(f, "failed to read prompt template: {}", display_path(path))
+            }
+            Self::InvalidPromptTemplate(message) => {
+                write!(f, "invalid prompt template: {message}")
             }
             Self::ProviderTransport(message) => {
                 write!(f, "provider transport failure: {message}")

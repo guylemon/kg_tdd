@@ -20,6 +20,9 @@ use crate::domain::{
 };
 use crate::ports::{DocumentSource, GraphArtifactSink};
 
+const DEFAULT_REPEAT_RUN_COUNT: usize = 10;
+const DEFAULT_REQUIRED_PASS_PERCENTAGE: u8 = 90;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureConfig {
@@ -122,6 +125,24 @@ struct EvalConfig {
     provider: ProviderConfig,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RepeatEvalConfig {
+    run_count: usize,
+    required_pass_percentage: u8,
+}
+
+#[derive(Debug)]
+struct RepeatEvalRunOutcome {
+    run_index: usize,
+    result: Result<(), String>,
+}
+
+#[derive(Debug)]
+struct RepeatEvalSummary {
+    config: RepeatEvalConfig,
+    outcomes: Vec<RepeatEvalRunOutcome>,
+}
+
 /// Evaluates all gold fixtures against a real configured provider.
 ///
 /// # Errors
@@ -133,10 +154,34 @@ pub fn evaluate_gold_fixtures_from_env() -> Result<(), String> {
     let config = EvalConfig::from_env()?;
     let fixtures = load_gold_fixtures()?;
 
+    evaluate_gold_fixtures(&config, &fixtures)
+}
+
+/// Runs the gold evaluation multiple times and requires the configured pass rate.
+///
+/// # Errors
+///
+/// Returns a formatted summary when the repeated gold evaluation does not meet
+/// the required pass rate, or when evaluation setup fails.
+pub fn evaluate_gold_fixtures_repeatedly_from_env() -> Result<(), String> {
+    let config = EvalConfig::from_env()?;
+    let fixtures = load_gold_fixtures()?;
+
+    evaluate_gold_fixtures_repeatedly(
+        &config,
+        &fixtures,
+        RepeatEvalConfig {
+            run_count: DEFAULT_REPEAT_RUN_COUNT,
+            required_pass_percentage: DEFAULT_REQUIRED_PASS_PERCENTAGE,
+        },
+    )
+}
+
+fn evaluate_gold_fixtures(config: &EvalConfig, fixtures: &[GoldFixture]) -> Result<(), String> {
     let mut failures = Vec::new();
 
     for fixture in fixtures {
-        if let Err(err) = evaluate_fixture(&fixture, &config) {
+        if let Err(err) = evaluate_fixture(fixture, config) {
             failures.push(err);
         }
     }
@@ -146,6 +191,43 @@ pub fn evaluate_gold_fixtures_from_env() -> Result<(), String> {
     } else {
         Err(failures.join("\n\n"))
     }
+}
+
+fn evaluate_gold_fixtures_repeatedly(
+    config: &EvalConfig,
+    fixtures: &[GoldFixture],
+    repeat_config: RepeatEvalConfig,
+) -> Result<(), String> {
+    repeat_config.validate()?;
+
+    let summary = evaluate_repeatedly(repeat_config, |run_index| {
+        debug!(
+            run_index,
+            run_count = repeat_config.run_count,
+            "starting repeated gold evaluation run"
+        );
+        evaluate_gold_fixtures(config, fixtures)
+    });
+
+    if summary.meets_threshold() {
+        Ok(())
+    } else {
+        Err(summary.render())
+    }
+}
+
+fn evaluate_repeatedly<F>(config: RepeatEvalConfig, mut evaluator: F) -> RepeatEvalSummary
+where
+    F: FnMut(usize) -> Result<(), String>,
+{
+    let mut outcomes = Vec::with_capacity(config.run_count);
+
+    for run_index in 1..=config.run_count {
+        let result = evaluator(run_index);
+        outcomes.push(RepeatEvalRunOutcome { run_index, result });
+    }
+
+    RepeatEvalSummary { config, outcomes }
 }
 
 fn evaluate_fixture(fixture: &GoldFixture, config: &EvalConfig) -> Result<(), String> {
@@ -181,6 +263,7 @@ fn fixture_run_context(fixture: &GoldFixture, config: &EvalConfig) -> RunContext
         &IngestConfig {
             tokenizer_name: fixture.config.tokenizer_name.clone(),
             max_chunk_tokens: fixture.config.max_chunk_tokens,
+            prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
         },
         MaxConcurrency(fixture.config.max_concurrency),
     )
@@ -254,6 +337,7 @@ fn build_fixture_extractor(
         IngestConfig {
             tokenizer_name: fixture.config.tokenizer_name.clone(),
             max_chunk_tokens: fixture.config.max_chunk_tokens,
+            prompt_templates_dir: IngestConfig::default_prompt_templates_dir(),
         },
         MaxConcurrency(fixture.config.max_concurrency),
         client,
@@ -942,6 +1026,83 @@ where
     })
 }
 
+impl RepeatEvalConfig {
+    fn validate(self) -> Result<(), String> {
+        if self.run_count == 0 {
+            return Err(String::from("repeat evaluation requires at least one run"));
+        }
+        if self.required_pass_percentage > 100 {
+            return Err(format!(
+                "repeat evaluation required pass percentage must be between 0 and 100, got {}",
+                self.required_pass_percentage
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn minimum_required_passes(self) -> usize {
+        self.run_count
+            .saturating_mul(usize::from(self.required_pass_percentage))
+            .div_ceil(100)
+    }
+}
+
+impl RepeatEvalSummary {
+    fn pass_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.result.is_ok())
+            .count()
+    }
+
+    fn fail_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.result.is_err())
+            .count()
+    }
+
+    fn meets_threshold(&self) -> bool {
+        self.pass_count() >= self.config.minimum_required_passes()
+    }
+
+    fn render(&self) -> String {
+        let mut report = String::new();
+        let minimum_required_passes = self.config.minimum_required_passes();
+        let pass_count = self.pass_count();
+        let fail_count = self.fail_count();
+
+        let _ = writeln!(
+            report,
+            "repeated gold evaluation did not meet the required pass rate"
+        );
+        let _ = writeln!(
+            report,
+            "runs: {} | passes: {} | failures: {} | required pass rate: {}% (minimum {} of {})",
+            self.config.run_count,
+            pass_count,
+            fail_count,
+            self.config.required_pass_percentage,
+            minimum_required_passes,
+            self.config.run_count
+        );
+        for outcome in &self.outcomes {
+            match &outcome.result {
+                Ok(()) => {
+                    let _ = writeln!(report, "run {}: pass", outcome.run_index);
+                }
+                Err(err) => {
+                    let _ = writeln!(report, "run {}: fail", outcome.run_index);
+                    let _ = writeln!(report, "{err}");
+                }
+            }
+        }
+
+        report.trim_end().to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -951,9 +1112,10 @@ mod tests {
 
     use super::{
         EvalConfig, ExpectedExtraction, ExpectedGraph, FixtureConfig, GoldFixture,
-        default_max_chunk_tokens, default_max_concurrency, default_tokenizer_name, diff_multiset,
-        fixture_extraction_failure, fixture_run_context, gold_fixtures_root, load_gold_fixtures,
-        load_gold_fixtures_from_root, persist_failure_artifacts,
+        RepeatEvalConfig, RepeatEvalSummary, default_max_chunk_tokens, default_max_concurrency,
+        default_tokenizer_name, diff_multiset, fixture_extraction_failure, fixture_run_context,
+        gold_fixtures_root, load_gold_fixtures, load_gold_fixtures_from_root,
+        persist_failure_artifacts,
     };
     use crate::application::{
         ChunkExtractionTrace, ChunkTrace, EntityMentionTrace, IngestionTrace, MaxConcurrency,
@@ -1212,6 +1374,73 @@ mod tests {
                 .expect("metadata")
                 .contains("\"chunk_count\": 1")
         );
+    }
+
+    #[test]
+    fn repeat_eval_requires_at_least_one_run() {
+        let err = RepeatEvalConfig {
+            run_count: 0,
+            required_pass_percentage: 90,
+        }
+        .validate()
+        .expect_err("zero runs should be rejected");
+
+        assert!(err.contains("at least one run"));
+    }
+
+    #[test]
+    fn repeat_eval_threshold_uses_ceiling_of_required_pass_rate() {
+        assert_eq!(
+            RepeatEvalConfig {
+                run_count: 10,
+                required_pass_percentage: 90,
+            }
+            .minimum_required_passes(),
+            9
+        );
+        assert_eq!(
+            RepeatEvalConfig {
+                run_count: 3,
+                required_pass_percentage: 90,
+            }
+            .minimum_required_passes(),
+            3
+        );
+    }
+
+    #[test]
+    fn repeat_eval_summary_reports_pass_fail_counts_and_details() {
+        let summary = RepeatEvalSummary {
+            config: RepeatEvalConfig {
+                run_count: 3,
+                required_pass_percentage: 90,
+            },
+            outcomes: vec![
+                super::RepeatEvalRunOutcome {
+                    run_index: 1,
+                    result: Ok(()),
+                },
+                super::RepeatEvalRunOutcome {
+                    run_index: 2,
+                    result: Err(String::from("run 2 failed")),
+                },
+                super::RepeatEvalRunOutcome {
+                    run_index: 3,
+                    result: Ok(()),
+                },
+            ],
+        };
+
+        assert_eq!(summary.pass_count(), 2);
+        assert_eq!(summary.fail_count(), 1);
+        assert!(!summary.meets_threshold());
+
+        let rendered = summary.render();
+        assert!(rendered.contains("repeated gold evaluation did not meet the required pass rate"));
+        assert!(rendered.contains("runs: 3 | passes: 2 | failures: 1"));
+        assert!(rendered.contains("required pass rate: 90% (minimum 3 of 3)"));
+        assert!(rendered.contains("run 2: fail"));
+        assert!(rendered.contains("run 2 failed"));
     }
 
     fn temp_dir(label: &str) -> PathBuf {
