@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::application::AppError;
 use crate::domain::{EntityType, NonEmptyString, RelationshipType};
@@ -62,7 +63,14 @@ pub(super) struct ChatMessage {
 struct ResponseFormat {
     #[serde(rename = "type")]
     kind: String,
-    schema: serde_json::Value,
+    json_schema: JsonSchemaResponseFormat,
+}
+
+#[derive(Serialize)]
+struct JsonSchemaResponseFormat {
+    name: String,
+    strict: bool,
+    schema: Value,
 }
 
 #[derive(Deserialize)]
@@ -84,8 +92,127 @@ fn schema_for<T>() -> Result<serde_json::Value, AppError>
 where
     T: JsonSchema,
 {
-    serde_json::to_value(schemars::schema_for!(T))
-        .map_err(|_| AppError::provider_response("failed to serialize request schema"))
+    let raw_schema = serde_json::to_value(schemars::schema_for!(T))
+        .map_err(|_| AppError::provider_response("failed to serialize request schema"))?;
+    Ok(normalize_schema_for_llm(raw_schema))
+}
+
+fn normalize_schema_for_llm(mut schema: Value) -> Value {
+    normalize_string_const_enums(&mut schema);
+
+    let definitions = collect_local_definitions(&schema);
+    if !definitions.is_empty() {
+        inline_local_refs(&mut schema, &definitions);
+    }
+
+    remove_non_provider_schema_keywords(&mut schema);
+
+    schema
+}
+
+fn remove_non_provider_schema_keywords(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("$defs");
+            object.remove("$schema");
+            object.remove("title");
+
+            for child in object.values_mut() {
+                remove_non_provider_schema_keywords(child);
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                remove_non_provider_schema_keywords(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_string_const_enums(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for child in object.values_mut() {
+                normalize_string_const_enums(child);
+            }
+
+            if let Some(normalized_enum) = string_const_enum_schema(object) {
+                *value = normalized_enum;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                normalize_string_const_enums(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn string_const_enum_schema(object: &Map<String, Value>) -> Option<Value> {
+    let variants = object.get("oneOf")?.as_array()?;
+    if variants.is_empty() {
+        return None;
+    }
+
+    let mut enum_values = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let variant_object = variant.as_object()?;
+        if variant_object.get("type") != Some(&Value::String(String::from("string"))) {
+            return None;
+        }
+
+        match variant_object.get("const") {
+            Some(Value::String(name)) => enum_values.push(Value::String(name.clone())),
+            _ => return None,
+        }
+    }
+
+    let mut normalized = Map::new();
+    normalized.insert(String::from("type"), Value::String(String::from("string")));
+    normalized.insert(String::from("enum"), Value::Array(enum_values));
+    Some(Value::Object(normalized))
+}
+
+fn collect_local_definitions(schema: &Value) -> Vec<(String, Value)> {
+    let Some(definitions) = schema.get("$defs").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+
+    definitions
+        .iter()
+        .map(|(name, definition)| (format!("#/$defs/{name}"), definition.clone()))
+        .collect()
+}
+
+fn inline_local_refs(value: &mut Value, definitions: &[(String, Value)]) {
+    match value {
+        Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                if object.len() == 1 {
+                    if let Some((_, definition)) = definitions
+                        .iter()
+                        .find(|(candidate, _)| candidate == reference)
+                    {
+                        *value = definition.clone();
+                        inline_local_refs(value, definitions);
+                        return;
+                    }
+                }
+            }
+
+            for child in object.values_mut() {
+                inline_local_refs(child, definitions);
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                inline_local_refs(child, definitions);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(super) fn build_chat_request<T>(
@@ -97,6 +224,11 @@ where
     T: JsonSchema,
 {
     let schema = schema_for::<T>()?;
+    let schema_name = std::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("Response")
+        .to_owned();
     Ok(ChatCompletionRequest {
         model: model.to_owned(),
         messages: vec![
@@ -110,8 +242,12 @@ where
             },
         ],
         response_format: ResponseFormat {
-            kind: String::from("json_object"),
-            schema,
+            kind: String::from("json_schema"),
+            json_schema: JsonSchemaResponseFormat {
+                name: schema_name,
+                strict: true,
+                schema,
+            },
         },
         temperature: 0.0,
         max_tokens: PROVIDER_MAX_TOKENS,
