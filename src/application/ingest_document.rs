@@ -1,7 +1,7 @@
-use crate::application::error::AppError;
 use crate::application::{
     ChunkExtractionTrace, ChunkTrace, EntityMentionTrace, EvidenceTrace, ExtractionOutcome,
-    IngestionTrace, ProviderResponseTrace, RelationshipMentionTrace, TraceableIngestResult,
+    IngestionTrace, ProviderResponseTrace, RelationshipMentionTrace, TraceableIngestError,
+    TraceableIngestResult,
 };
 use crate::domain::{
     Document, GraphEdge, GraphNode, KnowledgeGraph, consolidate_entities, consolidate_relationships,
@@ -23,8 +23,11 @@ where
     pub(crate) fn execute_with_trace(
         &self,
         document: &Document,
-    ) -> Result<TraceableIngestResult, AppError> {
-        let chunks = self.extractor.partition(document)?;
+    ) -> Result<TraceableIngestResult, TraceableIngestError> {
+        let chunks = self
+            .extractor
+            .partition(document)
+            .map_err(|error| TraceableIngestError::new(error, IngestionTrace::default()))?;
 
         let mut chunk_traces = Vec::with_capacity(chunks.len());
         let mut entity_mentions = Vec::new();
@@ -40,7 +43,19 @@ where
                 token_count: chunk.token_count.0,
             });
 
-            let extraction = self.extractor.extract(chunk)?;
+            let extraction = match self.extractor.extract(chunk) {
+                Ok(extraction) => extraction,
+                Err(error) => {
+                    return Err(TraceableIngestError::new(
+                        error,
+                        IngestionTrace {
+                            chunks: chunk_traces,
+                            provider_responses,
+                            extracted_mentions,
+                        },
+                    ));
+                }
+            };
             let ExtractionOutcome {
                 entities,
                 relationships,
@@ -175,8 +190,11 @@ mod tests {
     #[test]
     fn propagates_chunk_extraction_errors() {
         let extractor = FakeExtractor {
-            chunks: vec![sample_chunk()],
-            extractions: RefCell::new(vec![Err(AppError::ExtractChunk)]),
+            chunks: vec![sample_chunk(), sample_chunk()],
+            extractions: RefCell::new(vec![
+                Ok(person_extraction_with_provider_responses()),
+                Err(AppError::ExtractChunk),
+            ]),
         };
         let service = IngestDocumentService::new(extractor);
 
@@ -185,7 +203,16 @@ mod tests {
             text: NonEmptyString(String::from("ignored")),
         });
 
-        assert!(matches!(result, Err(AppError::ExtractChunk)));
+        let Err(err) = result else {
+            panic!("chunk extraction should fail");
+        };
+        assert!(matches!(
+            err.error,
+            crate::application::AppError::ExtractChunk
+        ));
+        assert_eq!(err.trace.chunks.len(), 2);
+        assert_eq!(err.trace.provider_responses.len(), 2);
+        assert_eq!(err.trace.extracted_mentions.len(), 1);
     }
 
     #[test]

@@ -145,8 +145,8 @@ where
     let ingest_result = match service.execute_with_trace(document) {
         Ok(result) => result,
         Err(err) => {
-            log_run_failed(run_context, Some(&document.id), &err);
-            return Err(err);
+            log_run_failed(run_context, Some(&document.id), &err.error);
+            return Err(err.error);
         }
     };
     debug!(
